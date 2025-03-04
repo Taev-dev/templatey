@@ -172,6 +172,37 @@ class TestRenderDriverSync:
         assert all(
             isinstance(exc, ZeroDivisionError) for exc in raised.exceptions)
 
+    def test_with_loading_exception(self):
+        """When receiving a template loading request that fails, the
+        exception raised must be added into the errors that are then
+        raised as part of the ExceptionGroup.
+        """
+        fake_render_env = Mock(spec=RenderEnvironment)
+
+        @template(fake_template_config, object())
+        class FakeTemplate:
+            ...
+
+        def inject_instead_of_flatten(template_instance, *, error_collector):
+            yield FakeTemplate()
+
+        fake_render_env.load_sync.side_effect = ZeroDivisionError('foo')
+
+        with pytest.raises(ExceptionGroup) as exc_info:
+            with patch(
+                'templatey.renderer._flatten_and_interpolate',
+                inject_instead_of_flatten
+            ):
+                __ = [*render_driver_sync(FakeTemplate(), fake_render_env)]
+
+        assert fake_render_env.load_sync.call_count == 1
+        assert fake_render_env.execute_template_function_sync.call_count == 0
+        raised = exc_info.value
+        assert isinstance(raised, ExceptionGroup)
+        assert len(raised.exceptions) == 1
+        assert all(
+            isinstance(exc, ZeroDivisionError) for exc in raised.exceptions)
+
 
 class TestFlattenAndInterpolate:
     """_flatten_and_interpolate()"""
@@ -196,6 +227,14 @@ class TestFlattenAndInterpolate:
     def test_var_precedence_parent_child(self):
         """Explicit variables passed in via the parent template's text
         must overwrite the value in the child template instance.
+        """
+
+    @pytest.mark.skip
+    def test_error_loading_template(self):
+        """If the requested template cannot be loaded successfully,
+        flatten and interpolate must return early without raising
+        additional errors, allowing the calling function to collect and
+        re-raise the template loading failure.
         """
 
 

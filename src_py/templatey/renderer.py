@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import typing
 from collections.abc import Collection
 from collections.abc import Generator
@@ -29,6 +30,8 @@ from templatey.templates import is_template_instance
 
 if typing.TYPE_CHECKING:
     from templatey.environments import RenderEnvironment
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -88,24 +91,20 @@ def render_driver_sync(
             # we need to load it before continuing.
             else:
                 required_template = type(delegated)
-                requested_help = render_environment.load_sync(
-                    required_template)
+                try:
+                    requested_help = render_environment.load_sync(
+                        required_template)
+                except Exception as exc:
+                    errors.append(exc)
 
     except StopIteration:
         pass
-
-    # This can happen if there's an error in something we were requested to do.
-    # This is unrecoverable without adding tons of complicated bidirectional
-    # error handling within _flatten_and_interpolate, which isn't worth the
-    # hassle.
-    except Exception as exc:
-        errors.append(exc)
 
     if errors:
         raise ExceptionGroup('Failed to render template', errors)
 
 
-def _flatten_and_interpolate(
+def _flatten_and_interpolate(  # noqa: C901
         template_instance: TemplateParamsInstance,
         *,
         # We could, in theory, return a list of errors instead, but it's
@@ -145,6 +144,7 @@ def _flatten_and_interpolate(
     a loaded template resource from the caller by yielding it
     back.
     """
+    had_errors: bool = False
     template_xable = cast(TemplateIntersectable, template_instance)
     template_config = template_xable._templatey_config
     all_slots: dict[str, Sequence[TemplateParamsInstance]] = {}
@@ -153,6 +153,7 @@ def _flatten_and_interpolate(
         if slot_value is ...:
             error_collector.append(_capture_traceback(IncompleteTemplateParams(
                 'Missing slot value!', template_instance, slot_name)))
+            had_errors = True
 
         all_slots[slot_name] = slot_value
 
@@ -176,6 +177,7 @@ def _flatten_and_interpolate(
                 error_collector.append(
                     _capture_traceback(IncompleteTemplateParams(
                         'Missing var value!', template_instance, var_name)))
+                had_errors = True
 
         else:
             unescaped_vars[var_name] = var_value
@@ -187,19 +189,29 @@ def _flatten_and_interpolate(
     # First of all: request the loaded and parsed template resource from
     # the caller, all the way back up the recursion chain.
     parsed_template_resource = (yield template_instance)
-    if not isinstance(parsed_template_resource, ParsedTemplateResource):
+    # This means there was an error in template loading (or a bug in our code.)
+    # Log an info message just in case.
+    if parsed_template_resource is None:
+        logger.info(
+            'Got None in response to template load request. This should '
+            + 'always correspond to an error loading the template, which '
+            + 'should appear in the final ExceptionGroup. If not, please '
+            + 'report a bug with templatey!')
+        return
+    elif not isinstance(parsed_template_resource, ParsedTemplateResource):
         raise TypeError(
             'Impossible branch: requested template, got something else!',
             parsed_template_resource)
 
-    for template_part in parsed_template_resource.parts:
-        yield from _coerce_interpolation(
-            template_part,
-            template_config,
-            unescaped_vars,
-            unverified_content,
-            all_slots,
-            error_collector=error_collector)
+    if not had_errors:
+        for template_part in parsed_template_resource.parts:
+            yield from _coerce_interpolation(
+                template_part,
+                template_config,
+                unescaped_vars,
+                unverified_content,
+                all_slots,
+                error_collector=error_collector)
 
 
 @singledispatch
