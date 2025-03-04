@@ -45,6 +45,9 @@ class MismatchedTemplateSignature(InvalidTemplate):
     """Raised when loading templates, if the template interface doesn't
     contain all of the contextuals (variables, slots, etc) referenced by
     the template text.
+
+    May also be raised during rendering, if the template text attempts
+    to reference a var as a slot, slot as content, etc.
     """
 
 

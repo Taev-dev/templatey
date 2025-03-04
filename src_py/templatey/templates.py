@@ -175,8 +175,11 @@ class TemplateSignature:
     the two can be used together.
     """
     slots: dict[str, type[TemplateParamsInstance]]
+    slot_names: set[str]
     vars_: dict[str, type]
+    var_names: set[str]
     content: dict[str, type]
+    content_names: set[str]
 
 
 @dataclass_transform()
@@ -198,7 +201,8 @@ def make_template_definition[T: type](
     cls._templatey_resource_locator = template_resource_locator
 
     cls._templatey_signature = template_signature = TemplateSignature(
-        slots={}, vars_={}, content={})
+        slots={}, slot_names=set(), vars_={}, var_names=set(), content={},
+        content_names=set())
 
     # We're prioritizing the typical case here, where the templates are defined
     # at the module toplevel, and therefore accessible within the module
@@ -258,12 +262,16 @@ def make_template_definition[T: type](
             # clearer
             if field_flavor is InterfaceAnnotationFlavor.VARIABLE:
                 dest_lookup = template_signature.vars_
+                dest_names = template_signature.var_names
             elif field_flavor is InterfaceAnnotationFlavor.SLOT:
                 dest_lookup = template_signature.slots
+                dest_names = template_signature.slot_names
             else:
                 dest_lookup = template_signature.content
+                dest_names = template_signature.content_names
 
             dest_lookup[template_field.name] = wrapped_type
+            dest_names.add(template_field.name)
 
     return cls
 

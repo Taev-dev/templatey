@@ -9,10 +9,12 @@ from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import singledispatch
+from types import EllipsisType
 from typing import cast
 from typing import overload
 
 from templatey.exceptions import IncompleteTemplateParams
+from templatey.exceptions import MismatchedTemplateSignature
 from templatey.exceptions import TemplateFunctionFailure
 from templatey.parser import InterpolatedContent
 from templatey.parser import InterpolatedFunctionCall
@@ -32,6 +34,7 @@ if typing.TYPE_CHECKING:
     from templatey.environments import RenderEnvironment
 
 logger = logging.getLogger(__name__)
+_VALUE_MISSING = object()
 
 
 @dataclass
@@ -56,8 +59,8 @@ def render_driver_sync(
     running in sync mode, and collects all of its errors. More
     details there!
     """
-    delegated: TemplateParamsInstance | str | Exception
-    requested_help: None | ParsedTemplateResource | FuncExecutionResult = None
+    flattened_or_help_req: TemplateParamsInstance | FuncExecutionRequest | str
+    help_response: None | ParsedTemplateResource | FuncExecutionResult = None
 
     errors = []
     render_recursor = _flatten_and_interpolate(
@@ -72,27 +75,27 @@ def render_driver_sync(
             # Note that it's important that we've pre-initialized the
             # bubbled_request to None, since the first .send() call
             # MUST ALWAYS be None (as per python spec).
-            delegated = render_recursor.send(requested_help)
+            flattened_or_help_req = render_recursor.send(help_response)
             # Always reset this immediately after sending a value, so that
             # we're less likely to accidentally send the same template
             # twice due to some other bug (defense in depth / fail loudly)
-            requested_help = None
+            help_response = None
             # The flattening resulted in a string value, ready for final
             # rendering
-            if isinstance(delegated, str):
-                yield delegated
+            if isinstance(flattened_or_help_req, str):
+                yield flattened_or_help_req
 
-            elif isinstance(delegated, FuncExecutionRequest):
-                requested_help = (
+            elif isinstance(flattened_or_help_req, FuncExecutionRequest):
+                help_response = (
                     render_environment.execute_template_function_sync(
-                        delegated))
+                        flattened_or_help_req))
 
             # The flattening requires a template resource to continue, so
             # we need to load it before continuing.
             else:
-                required_template = type(delegated)
+                required_template = type(flattened_or_help_req)
                 try:
-                    requested_help = render_environment.load_sync(
+                    help_response = render_environment.load_sync(
                         required_template)
                 except Exception as exc:
                     errors.append(exc)
@@ -104,7 +107,7 @@ def render_driver_sync(
         raise ExceptionGroup('Failed to render template', errors)
 
 
-def _flatten_and_interpolate(  # noqa: C901
+def _flatten_and_interpolate(
         template_instance: TemplateParamsInstance,
         *,
         # We could, in theory, return a list of errors instead, but it's
@@ -144,47 +147,31 @@ def _flatten_and_interpolate(  # noqa: C901
     a loaded template resource from the caller by yielding it
     back.
     """
-    had_errors: bool = False
     template_xable = cast(TemplateIntersectable, template_instance)
     template_config = template_xable._templatey_config
-    all_slots: dict[str, Sequence[TemplateParamsInstance]] = {}
-    for slot_name in template_xable._templatey_signature.slots:
-        slot_value = getattr(template_instance, slot_name)
-        if slot_value is ...:
-            error_collector.append(_capture_traceback(IncompleteTemplateParams(
-                'Missing slot value!', template_instance, slot_name)))
-            had_errors = True
+    all_slots = _ParamLookup[Sequence[TemplateParamsInstance]](
+        template_instance=template_instance,
+        error_collector=error_collector,
+        placeholder_on_error=[],
+        valid_param_names=template_xable._templatey_signature.slot_names)
 
-        all_slots[slot_name] = slot_value
-
-    # TODO: question: is it worth it to also do type checking of the
+    # TODO: question: is it worth it to also do type checking of the override
     # arguments? This would probably imply something like pydantic if you
     # want to have it be robust, but I'm not entirely sure that this is
     # a worthwhile tradeoff. Maybe something user-configurable within the
     # environment?
-    if parent_params is None:
-        unescaped_vars: dict[str, object] = {}
-    else:
-        unescaped_vars: dict[str, object] = parent_params
+    unescaped_vars = _ParamLookup[object](
+        template_instance=template_instance,
+        error_collector=error_collector,
+        placeholder_on_error='',
+        overrides=parent_params,
+        valid_param_names=template_xable._templatey_signature.var_names)
 
-    for var_name in template_xable._templatey_signature.vars_:
-        var_value = getattr(template_instance, var_name)
-        if var_value is ...:
-            # Note: don't combine with above. This is merging in with the
-            # parent params; we want explicit vars passed to overwrite
-            # the vars from the template
-            if var_name not in unescaped_vars:
-                error_collector.append(
-                    _capture_traceback(IncompleteTemplateParams(
-                        'Missing var value!', template_instance, var_name)))
-                had_errors = True
-
-        else:
-            unescaped_vars[var_name] = var_value
-
-    unverified_content = {
-        content_name: getattr(template_instance, content_name)
-        for content_name in template_xable._templatey_signature.content}
+    unverified_content = _ParamLookup[object](
+        template_instance=template_instance,
+        error_collector=error_collector,
+        placeholder_on_error='',
+        valid_param_names=template_xable._templatey_signature.content_names)
 
     # First of all: request the loaded and parsed template resource from
     # the caller, all the way back up the recursion chain.
@@ -203,15 +190,14 @@ def _flatten_and_interpolate(  # noqa: C901
             'Impossible branch: requested template, got something else!',
             parsed_template_resource)
 
-    if not had_errors:
-        for template_part in parsed_template_resource.parts:
-            yield from _coerce_interpolation(
-                template_part,
-                template_config,
-                unescaped_vars,
-                unverified_content,
-                all_slots,
-                error_collector=error_collector)
+    for template_part in parsed_template_resource.parts:
+        yield from _coerce_interpolation(
+            template_part,
+            template_config,
+            unescaped_vars,
+            unverified_content,
+            all_slots,
+            error_collector=error_collector)
 
 
 @singledispatch
@@ -666,3 +652,72 @@ def _coerce_injected_value(
         template_config.content_verifier(escapish_value)
 
     return escapish_value
+
+
+@dataclass(slots=True, init=False)
+class _ParamLookup[T]:
+    """This is a highly-performant layer of indirection that avoids most
+    dictionary copies, but nonetheless allows us to both have helpful
+    error messages, and collect all possible errors into a single
+    ExceptionGroup (without short-circuiting on the first error) while
+    rendering.
+    """
+    template_instance: TemplateParamsInstance
+    error_collector: list[Exception]
+    placeholder_on_error: T
+    lookup: dict[str, T]
+
+    def __init__(
+            self,
+            template_instance: TemplateParamsInstance,
+            valid_param_names: set[str],
+            error_collector: list[Exception],
+            placeholder_on_error: T,
+            overrides: dict[str, T] | None = None):
+        self.error_collector = error_collector
+        self.template_instance = template_instance
+        self.placeholder_on_error = placeholder_on_error
+        self.lookup = lookup = {}
+
+        # This is because we need to filter the getattr() call based on slots
+        # vs vars vs content
+        for param_name in valid_param_names:
+            if (
+                overrides is not None
+                and (override_val := overrides.get(param_name, _VALUE_MISSING))
+                is not _VALUE_MISSING
+            ):
+                # Pyright isn't correctly narrowing based on the "is not" above
+                lookup[param_name] = cast(T, override_val)
+
+            # Note that we're relying upon the template instance we pulled
+            # these from matching the signature of the template, but unless
+            # someone's been fiddling around with the templatey innards, that
+            # will always be the case
+            else:
+                value = getattr(template_instance, param_name)
+                if value is ...:
+                    error_collector.append(
+                        _capture_traceback(IncompleteTemplateParams(
+                            'Missing template param value!',
+                            template_instance, param_name)))
+                    lookup[param_name] = placeholder_on_error
+
+                else:
+                    lookup[param_name] = value
+
+    def __getitem__(self, name: str) -> T:
+        try:
+            return self.lookup[name]
+
+        except KeyError as exc:
+            self.error_collector.append(_capture_traceback(
+                MismatchedTemplateSignature(
+                    'Template referenced invalid param in a way that was not '
+                    + 'caught during template loading. This likely indicates '
+                    + 'referencing eg a slot as content, content as var, etc. '
+                    + 'Or it could be a bug in templatey.',
+                    self.template_instance,
+                    name),
+                from_exc=exc))
+            return self.placeholder_on_error
