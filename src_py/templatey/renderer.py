@@ -56,8 +56,10 @@ def render_driver_sync(
     delegated: TemplateParamsInstance | str | Exception
     requested_help: None | ParsedTemplateResource | FuncExecutionResult = None
 
-    render_recursor = _flatten_and_interpolate(template_instance)
     errors = []
+    render_recursor = _flatten_and_interpolate(
+        template_instance,
+        error_collector=errors)
     # Note that we **cannot use a for loop here.** The return value of
     # the call to .send() is the next yield, so if we try to mix together
     # both a ``for flattened_str_or_template_request in ...`` and a
@@ -77,15 +79,6 @@ def render_driver_sync(
             if isinstance(delegated, str):
                 yield delegated
 
-            # The flattening resulted in an error. Collect it so we can
-            # raise them all at once at the end.
-            # TODO: move exception handling into flatten_and_interpolate.
-            # Use the generator return value (which becomes the return value
-            # of ``yield from`` to collect them, and then get it from the
-            # StopIteration at the end of driving.)
-            elif isinstance(delegated, Exception):
-                errors.append(delegated)
-
             elif isinstance(delegated, FuncExecutionRequest):
                 requested_help = (
                     render_environment.execute_template_function_sync(
@@ -101,9 +94,10 @@ def render_driver_sync(
     except StopIteration:
         pass
 
-    # This can happen if there's an error at the outermost template. We want
-    # to make sure we always raise an ExceptionGroup for any and all template
-    # errors, regardless of depth, so we want to capture it and re-wrap it.
+    # This can happen if there's an error in something we were requested to do.
+    # This is unrecoverable without adding tons of complicated bidirectional
+    # error handling within _flatten_and_interpolate, which isn't worth the
+    # hassle.
     except Exception as exc:
         errors.append(exc)
 
@@ -114,9 +108,14 @@ def render_driver_sync(
 def _flatten_and_interpolate(
         template_instance: TemplateParamsInstance,
         *,
-        parent_params: dict[str, object] | None = None
+        # We could, in theory, return a list of errors instead, but it's
+        # cleaner code if we pass in the error collector as a parameter.
+        # It also has the added benefit of avoiding a bunch of .extend()
+        # calls because of the recursion.
+        error_collector: list[Exception],
+        parent_params: dict[str, object] | None = None,
         ) -> Generator[
-            TemplateParamsInstance | str | Exception | FuncExecutionRequest,
+            TemplateParamsInstance | str | FuncExecutionRequest,
             ParsedTemplateResource | None | FuncExecutionResult,
             None]:
     """Okay, this is gonna get messy, so here's the deal.
@@ -152,8 +151,8 @@ def _flatten_and_interpolate(
     for slot_name in template_xable._templatey_signature.slots:
         slot_value = getattr(template_instance, slot_name)
         if slot_value is ...:
-            yield _capture_traceback(IncompleteTemplateParams(
-                    'Missing slot value!', template_instance, slot_name))
+            error_collector.append(_capture_traceback(IncompleteTemplateParams(
+                'Missing slot value!', template_instance, slot_name)))
 
         all_slots[slot_name] = slot_value
 
@@ -174,8 +173,9 @@ def _flatten_and_interpolate(
             # parent params; we want explicit vars passed to overwrite
             # the vars from the template
             if var_name not in unescaped_vars:
-                yield _capture_traceback(IncompleteTemplateParams(
-                        'Missing var value!', template_instance, var_name))
+                error_collector.append(
+                    _capture_traceback(IncompleteTemplateParams(
+                        'Missing var value!', template_instance, var_name)))
 
         else:
             unescaped_vars[var_name] = var_value
@@ -198,7 +198,8 @@ def _flatten_and_interpolate(
             template_config,
             unescaped_vars,
             unverified_content,
-            all_slots)
+            all_slots,
+            error_collector=error_collector)
 
 
 @singledispatch
@@ -208,8 +209,10 @@ def _coerce_interpolation(
         unescaped_vars: dict[str, object],
         unverified_content: dict[str, object],
         all_slots: dict[str, Sequence[TemplateParamsInstance]],
+        *,
+        error_collector: list[Exception]
         ) -> Generator[
-            TemplateParamsInstance | str | Exception | FuncExecutionRequest,
+            TemplateParamsInstance | str | FuncExecutionRequest,
             ParsedTemplateResource | None | FuncExecutionResult,
             None]:
     """This is the backstop for interpolation coercion to a string,
@@ -228,8 +231,10 @@ def _(
         unescaped_vars: dict[str, object],
         unverified_content: dict[str, object],
         all_slots: dict[str, Sequence[TemplateParamsInstance]],
+        *,
+        error_collector: list[Exception]
         ) -> Generator[
-            TemplateParamsInstance | str | Exception | FuncExecutionRequest,
+            TemplateParamsInstance | str | FuncExecutionRequest,
             ParsedTemplateResource | None | FuncExecutionResult,
             None]:
     """When we encounter a template_part that is an explicit string,
@@ -247,8 +252,10 @@ def _(
         unescaped_vars: dict[str, object],
         unverified_content: dict[str, object],
         all_slots: dict[str, Sequence[TemplateParamsInstance]],
+        *,
+        error_collector: list[Exception]
         ) -> Generator[
-            TemplateParamsInstance | str | Exception | FuncExecutionRequest,
+            TemplateParamsInstance | str | FuncExecutionRequest,
             ParsedTemplateResource | None | FuncExecutionResult,
             None]:
     """When we encounter an interpolated variable, we need to first
@@ -273,8 +280,10 @@ def _(
         unescaped_vars: dict[str, object],
         unverified_content: dict[str, object],
         all_slots: dict[str, Sequence[TemplateParamsInstance]],
+        *,
+        error_collector: list[Exception]
         ) -> Generator[
-            TemplateParamsInstance | str | Exception | FuncExecutionRequest,
+            TemplateParamsInstance | str | FuncExecutionRequest,
             ParsedTemplateResource | None | FuncExecutionResult,
             None]:
     """Interpolated content can take either a simple or complicated
@@ -309,18 +318,19 @@ def _(
                     template_config,
                     unescaped_vars,
                     unverified_content,
-                    all_slots)
+                    all_slots,
+                    error_collector=error_collector)
 
             else:
-                yield _capture_traceback(TypeError(
+                error_collector.append(_capture_traceback(TypeError(
                     'ComplexContent.flatten() must always return strings '
                     + 'or InterpolatedVariable instances!',
-                    content_segment))
+                    content_segment)))
 
     else:
-        yield _capture_traceback(TypeError(
+        error_collector.append(_capture_traceback(TypeError(
             'Interpolated content values must always be strings or '
-            + 'ComplexContent instances!', val_from_params))
+            + 'ComplexContent instances!', val_from_params)))
 
 
 @_coerce_interpolation.register
@@ -330,8 +340,10 @@ def _(
         unescaped_vars: dict[str, object],
         unverified_content: dict[str, object],
         all_slots: dict[str, Sequence[TemplateParamsInstance]],
+        *,
+        error_collector: list[Exception]
         ) -> Generator[
-            TemplateParamsInstance | str | Exception | FuncExecutionRequest,
+            TemplateParamsInstance | str | FuncExecutionRequest,
             ParsedTemplateResource | None | FuncExecutionResult,
             None]:
     """Interpolated slots need to be recursed into -- that's the whole
@@ -344,11 +356,12 @@ def _(
         try:
             yield from _flatten_and_interpolate(
                 slot_to_recurse,
-                parent_params=slot_params_from_parent_template)
+                parent_params=slot_params_from_parent_template,
+                error_collector=error_collector)
         # Exceptions can bubble out if eg a nested template wasn't found, or
         # if the signature mismatched, etc.
         except Exception as exc:
-            yield exc
+            error_collector.append(exc)
 
 
 @_coerce_interpolation.register
@@ -358,8 +371,10 @@ def _(
         unescaped_vars: dict[str, object],
         unverified_content: dict[str, object],
         all_slots: dict[str, Sequence[TemplateParamsInstance]],
+        *,
+        error_collector: list[Exception]
         ) -> Generator[
-            TemplateParamsInstance | str | Exception | FuncExecutionRequest,
+            TemplateParamsInstance | str | FuncExecutionRequest,
             ParsedTemplateResource | None | FuncExecutionResult,
             None]:
     """Interpolated function calls are a special case. They need to be
@@ -387,10 +402,10 @@ def _(
             + 'else!', function_result)
 
     if function_result.exc is not None:
-        yield _capture_traceback(
+        error_collector.append(_capture_traceback(
             TemplateFunctionFailure(
                 'Template function raised!', template_part.name),
-            from_exc=function_result.exc)
+            from_exc=function_result.exc))
         return
 
     if function_result.retval is None:
@@ -412,7 +427,9 @@ def _(
         # template after the function call returns the bound slot!
         elif is_template_instance(returned_part):
             nested_template = cast(TemplateParamsInstance, returned_part)
-            yield from _flatten_and_interpolate(nested_template)
+            yield from _flatten_and_interpolate(
+                nested_template,
+                error_collector=error_collector)
 
         else:
             raise TypeError(

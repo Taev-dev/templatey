@@ -62,14 +62,14 @@ class TestRenderDriverSync:
         class FakeTemplate:
             ...
 
-        def template_part_injector(template_instance):
+        def inject_instead_of_flatten(template_instance, *, error_collector):
             yield 'foo'
             yield 'bar'
             yield 'baz'
 
         with patch(
             'templatey.renderer._flatten_and_interpolate',
-            template_part_injector
+            inject_instead_of_flatten
         ):
             parts = [*render_driver_sync(FakeTemplate(), fake_render_env)]
 
@@ -90,7 +90,7 @@ class TestRenderDriverSync:
         class FakeTemplate:
             ...
 
-        def template_part_injector(template_instance):
+        def inject_instead_of_flatten(template_instance, *, error_collector):
             val1 = yield FakeTemplate()
             yield val1
             val2 = yield FuncExecutionRequest(name='foo', args=(), kwargs={})
@@ -102,7 +102,7 @@ class TestRenderDriverSync:
 
         with patch(
             'templatey.renderer._flatten_and_interpolate',
-            template_part_injector
+            inject_instead_of_flatten
         ):
             parts = [*render_driver_sync(FakeTemplate(), fake_render_env)]
 
@@ -121,16 +121,16 @@ class TestRenderDriverSync:
         class FakeTemplate:
             ...
 
-        def template_part_injector(template_instance):
+        def inject_instead_of_flatten(template_instance, *, error_collector):
             yield 'foo'
-            yield ZeroDivisionError('bar')
+            error_collector.append(ZeroDivisionError('bar'))
             yield 'baz'
-            yield ZeroDivisionError('zab')
+            error_collector.append(ZeroDivisionError('zab'))
 
         with pytest.raises(ExceptionGroup) as exc_info:
             with patch(
                 'templatey.renderer._flatten_and_interpolate',
-                template_part_injector
+                inject_instead_of_flatten
             ):
                 __ = [*render_driver_sync(FakeTemplate(), fake_render_env)]
 
@@ -155,13 +155,14 @@ class TestRenderDriverSync:
         class FakeTemplate:
             ...
 
-        def template_part_injector(template_instance):
-            yield ZeroDivisionError('bar')
+        def inject_instead_of_flatten(template_instance, *, error_collector):
+            error_collector.append(ZeroDivisionError('bar'))
+            yield 'foo'
 
         with pytest.raises(ExceptionGroup) as exc_info:
             with patch(
                 'templatey.renderer._flatten_and_interpolate',
-                template_part_injector
+                inject_instead_of_flatten
             ):
                 __ = [*render_driver_sync(FakeTemplate(), fake_render_env)]
 
@@ -214,7 +215,8 @@ class TestCoerceInterpolation:
             new_fake_template_config,
             unescaped_vars={},
             unverified_content={},
-            all_slots={})
+            all_slots={},
+            error_collector=[])
 
         assert apply_format_mock.call_count == 0
         assert new_fake_template_config.variable_escaper.call_count == 0
@@ -234,7 +236,8 @@ class TestCoerceInterpolation:
             new_fake_template_config,
             unescaped_vars={'foo': 'oof'},
             unverified_content={},
-            all_slots={})
+            all_slots={},
+            error_collector=[])
 
         assert apply_format_mock.call_count == 1
         assert new_fake_template_config.variable_escaper.call_count == 1
@@ -253,7 +256,8 @@ class TestCoerceInterpolation:
             new_fake_template_config,
             unescaped_vars={},
             unverified_content={'foo': 'oof'},
-            all_slots={})
+            all_slots={},
+            error_collector=[])
 
         assert apply_format_mock.call_count == 0
         assert new_fake_template_config.variable_escaper.call_count == 0
@@ -272,7 +276,8 @@ class TestCoerceInterpolation:
             new_fake_template_config,
             unescaped_vars={'dog_count': 2, 'cat_count': 1},
             unverified_content={'foo': FakeComplexContent('dog_count', 'dog')},
-            all_slots={})]
+            all_slots={},
+            error_collector=[])]
 
         assert apply_format_mock.call_count == 1
         assert new_fake_template_config.variable_escaper.call_count == 1
@@ -300,7 +305,8 @@ class TestCoerceInterpolation:
                 unverified_content={},
                 # The actual values here are unused, because we've patched
                 # the call to flatten_and_interpolate.
-                all_slots={'foo': [..., ...]})]
+                all_slots={'foo': [..., ...]},
+                error_collector=[])]
 
         assert retval == ['foo', 'bar', 'baz'] * 2
         assert apply_format_mock.call_count == 0
@@ -332,7 +338,8 @@ class TestCoerceInterpolation:
             new_fake_template_config,
             unescaped_vars={},
             unverified_content={},
-            all_slots={})
+            all_slots={},
+            error_collector=[])
         exe_request = generator.send(None)
 
         assert isinstance(exe_request, FuncExecutionRequest)
@@ -373,7 +380,8 @@ class TestCoerceInterpolation:
             new_fake_template_config,
             unescaped_vars={},
             unverified_content={},
-            all_slots={})
+            all_slots={},
+            error_collector=[])
         exe_request = generator.send(None)
 
         assert isinstance(exe_request, FuncExecutionRequest)
@@ -425,7 +433,8 @@ class TestCoerceInterpolation:
             new_fake_template_config,
             unescaped_vars={},
             unverified_content={},
-            all_slots={})
+            all_slots={},
+            error_collector=[])
         exe_request = generator.send(None)
 
         assert isinstance(exe_request, FuncExecutionRequest)
