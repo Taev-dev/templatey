@@ -1,0 +1,13 @@
+> Welcome, weary traveler
+<
+
+If you're reading this, you've probably somehow stumbled upon templatey,
+possibly via pypi. In which case, have fun!
+
+However, it's currently completely un-documented. This isn't usually our
+style, but we needed to reference templatey in a different project, and the
+quickest way of making it available as a dependency was simply to publish it
+to pypi, since that was always the end goal.
+
+So feel free to use it, but let the buyer beware: there are probably some
+rough edges here! Not the least of which is a complete lack of docs.

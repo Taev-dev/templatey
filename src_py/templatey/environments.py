@@ -1,0 +1,306 @@
+import inspect
+from collections.abc import Callable
+from collections.abc import Iterable
+from collections.abc import Sequence
+from dataclasses import dataclass
+from typing import Literal
+from typing import Optional
+from typing import Protocol
+from typing import cast
+from typing import runtime_checkable
+
+from templatey.exceptions import MismatchedTemplateEnvironment
+from templatey.exceptions import MismatchedTemplateSignature
+from templatey.exceptions import TemplateyException
+from templatey.parser import ParsedTemplateResource
+from templatey.parser import parse
+from templatey.renderer import FuncExecutionRequest
+from templatey.renderer import FuncExecutionResult
+from templatey.renderer import render_driver_sync
+from templatey.templates import InjectedValue
+from templatey.templates import TemplateIntersectable
+from templatey.templates import TemplateParamsInstance
+
+# Note: strings here will be escaped. InjectedValues may decide whether or not
+# escaping should be applied. Nested templates will not be escaped.
+TemplateFunction = Callable[
+    ..., Sequence[str | TemplateParamsInstance | InjectedValue]]
+
+
+@dataclass(frozen=True)
+class _TemplateFunctionContainer:
+    name: str
+    function: TemplateFunction
+    signature: inspect.Signature
+
+
+@runtime_checkable
+class SyncTemplateLoader[L: object](Protocol):
+
+    def load_sync(self, template_resource_locator: L) -> str:
+        """This is responsible for loading the actual template text,
+        based on the passed resource locator.
+        """
+        ...
+
+
+@runtime_checkable
+class AsyncTemplateLoader[L: object](Protocol):
+
+    async def load_async(self, template_resource_locator: L) -> str:
+        """This is responsible for loading the actual template text,
+        based on the passed resource locator.
+        """
+        ...
+
+
+class RenderEnvironment:
+    _parsed_template_cache: dict[
+        type[TemplateParamsInstance], ParsedTemplateResource]
+    _template_functions: dict[str, _TemplateFunctionContainer]
+    # We use this to prevent registering template functions after any calls
+    # to load() have been made, because it would result in different template
+    # functions per template
+    _has_loaded_any_template: bool
+    _template_loader: SyncTemplateLoader | AsyncTemplateLoader
+    strict_interpolation_validation: bool
+
+    def __init__(
+            self,
+            template_loader: SyncTemplateLoader | AsyncTemplateLoader,
+            template_functions: Optional[Iterable[TemplateFunction]] = None,
+            # If True, this will make sure that the template interface exactly
+            # matches the template text. If False, this will just make sure
+            # that the template interface is at least sufficient for the
+            # template text.
+            strict_interpolation_validation: bool = True):
+        self.strict_interpolation_validation = strict_interpolation_validation
+        self._has_loaded_any_template = False
+
+        self._template_functions = {}
+        if template_functions is not None:
+            for function in template_functions:
+                self.register_template_function(function)
+
+        self._can_load_sync = isinstance(template_loader, SyncTemplateLoader)
+        self._can_load_async = isinstance(template_loader, AsyncTemplateLoader)
+        self._template_loader = template_loader
+        self._parsed_template_cache = {}
+
+    def register_template_function(self, template_function: TemplateFunction):
+        if self._has_loaded_any_template:
+            raise TemplateyException(
+                'To prevent having different template functions per template, '
+                + 'you cannot register new template functions after loading '
+                + 'any templates in an environment.')
+
+        function_name = template_function.__name__
+        self._template_functions[function_name] = _TemplateFunctionContainer(
+            name=function_name,
+            function=template_function,
+            signature=inspect.signature(template_function))
+
+    async def load_async(
+            self,
+            template: type[TemplateParamsInstance],
+            *,
+            override_validation_strictness: None | bool = None,
+            force_reload: bool = False
+            ) -> ParsedTemplateResource:
+        """Loads a template resource from a TemplateParamsInstance
+        class. Caches it within the environment and returns the
+        resulting ParsedTemplateResource.
+
+        If force_reload is True, bypasses the cache.
+        """
+        if not self._can_load_async:
+            raise TypeError(
+                'Current template loader does not support async loading')
+
+        if (
+            not force_reload
+            and template in self._parsed_template_cache
+        ):
+            return self._parsed_template_cache[template]
+
+        template_loader = cast(AsyncTemplateLoader, self._template_loader)
+        template_class = cast(type[TemplateIntersectable], template)
+        template_text = await template_loader.load_async(
+            template_class._templatey_resource_locator)
+        return self._parse_and_cache(
+            template_class,
+            template_text,
+            override_validation_strictness)
+
+    def load_sync(
+            self,
+            template: type[TemplateParamsInstance],
+            *,
+            override_validation_strictness: None | bool = None,
+            force_reload: bool = False
+            ) -> ParsedTemplateResource:
+        """Loads a template resource from a TemplateParamsInstance
+        class. Caches it within the environment and returns the
+        resulting ParsedTemplateResource.
+
+        If force_reload is True, bypasses the cache.
+        """
+        if not self._can_load_sync:
+            raise TypeError(
+                'Current template loader does not support sync loading')
+
+        # Note that cache operations here aren't threadsafe, but as long as
+        # the underlying resource doesn't change, the worst case is that we
+        # load and parse the same template resource multiple times without
+        # calling force_reload. This is probably better than wrapping the
+        # whole thing in a lock.
+        if (
+            not force_reload
+            and template in self._parsed_template_cache
+        ):
+            return self._parsed_template_cache[template]
+
+        # The cast here is because it could be a sync and/or async loader,
+        # and the type system doesn't know we just verified that via
+        # _can_load_sync.
+        template_loader = cast(SyncTemplateLoader, self._template_loader)
+        template_class = cast(type[TemplateIntersectable], template)
+        template_text = template_loader.load_sync(
+            template_class._templatey_resource_locator)
+        return self._parse_and_cache(
+            template_class,
+            template_text,
+            override_validation_strictness)
+
+    def _parse_and_cache(
+            self,
+            template_class: type[TemplateIntersectable],
+            template_text: str,
+            override_validation_strictness: None | bool
+            ) -> ParsedTemplateResource:
+        # Note: doing this first for thread safety in the sync case
+        self._has_loaded_any_template = True
+        try:
+            template_config = template_class._templatey_config
+            parsed_template_resource = parse(
+                template_text, template_config.interpolator)
+
+            if override_validation_strictness is None:
+                strict_mode = self.strict_interpolation_validation
+            else:
+                strict_mode = override_validation_strictness
+
+            self._validate_template_functions(
+                template_class, parsed_template_resource,)
+            self._validate_template_signature(
+                template_class, parsed_template_resource,
+                strict_mode=strict_mode)
+
+        except Exception:
+            self._has_loaded_any_template = False
+            raise
+
+        template = cast(type[TemplateParamsInstance], template_class)
+        self._parsed_template_cache[template] = parsed_template_resource
+        return parsed_template_resource
+
+    def _validate_template_functions(
+            self,
+            template_class: type[TemplateIntersectable],
+            parsed_template_resource: ParsedTemplateResource
+            ) -> Literal[True]:
+        """Makes sure that the template environment contains all of the
+        template functions referenced in the template text. Returns
+        True or raises MismatchedTemplateEnvironment.
+
+        Note that we never use strict mode here, because it would be
+        silly to require every single template to call every single
+        template function. That's simply not what they're meant to be
+        used for!
+        """
+        # Interestingly, .difference() works here, but plain ``-`` doesn't
+        function_mismatch = parsed_template_resource.function_names.difference(
+            self._template_functions)
+        if function_mismatch:
+            raise MismatchedTemplateEnvironment(
+                'Template environment functions did not match the template '
+                + 'text!', template_class, function_mismatch)
+
+        for (
+            function_name, function_calls
+        ) in parsed_template_resource.function_calls.items():
+            function_container = self._template_functions[function_name]
+            for function_call in function_calls:
+                try:
+                    function_container.signature.bind(
+                        *function_call.call_args,
+                        **function_call.call_kwargs)
+                except TypeError as exc:
+                    raise MismatchedTemplateEnvironment(
+                        'Template environment function had invalid call '
+                        + 'signature', template_class, function_call
+                    ) from exc
+
+        return True
+
+    def _validate_template_signature(
+            self,
+            template_class: type[TemplateIntersectable],
+            parsed_template_resource: ParsedTemplateResource,
+            *,
+            strict_mode: bool
+            ) -> Literal[True]:
+        """Makes sure that the template signature includes all of the
+        names referenced in the template text. Returns True or
+        raises MismatchedTemplateSignature.
+        """
+        template_signature = template_class._templatey_signature
+        variable_names = set(template_signature.vars_)
+        slot_names = set(template_signature.slots)
+        content_names = set(template_signature.content)
+
+        if strict_mode:
+            variables_mismatch = (
+                parsed_template_resource.variable_names ^ variable_names)
+            slot_mismatch = (
+                parsed_template_resource.slot_names ^ slot_names)
+            content_mismatch = (
+                parsed_template_resource.content_names ^ content_names)
+
+        else:
+            variables_mismatch = (
+                parsed_template_resource.variable_names - variable_names)
+            slot_mismatch = (
+                parsed_template_resource.slot_names - slot_names)
+            content_mismatch = (
+                parsed_template_resource.content_names - content_names)
+
+        if variables_mismatch or slot_mismatch or content_mismatch:
+            raise MismatchedTemplateSignature(
+                'Template interface variables, content, or slots did not '
+                + 'match the template text!', template_class,
+                variables_mismatch, slot_mismatch, content_mismatch)
+
+        return True
+
+    def render_sync(
+            self,
+            template_instance: TemplateParamsInstance
+            ) -> str:
+        return ''.join(render_driver_sync(
+            template_instance,
+            render_environment=self))
+
+    def execute_template_function_sync(
+            self,
+            request: FuncExecutionRequest
+            ) -> FuncExecutionResult:
+        try:
+            return FuncExecutionResult(
+                retval=self._template_functions[request.name].function(
+                    *request.args, **request.kwargs),
+                exc=None)
+        except Exception as exc:
+            return FuncExecutionResult(
+                retval=None,
+                exc=exc)

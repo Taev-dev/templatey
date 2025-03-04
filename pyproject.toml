@@ -1,0 +1,112 @@
+[project]
+name = "templatey"
+description = "A simple (but powerful), type-hinted templating engine"
+authors = []
+dynamic = ["version"]
+requires-python = ">= 3.12"
+readme = "README.md"
+
+dependencies = [
+    "typing_extensions>=4.12.2; python_version < '3.13'"
+]
+
+[dependency-groups]
+test = [
+    "jinja2>=3.1.5",
+    "pytest >= 8.1.1",
+    "pytest-anyio>=0.0.0",
+    "trio>=0.29.0",
+]
+
+lint = [
+    "ruff >= 0.3.3",
+    "refurb >= 2.0.0"
+]
+
+repl = [
+    "ipython >= 8.8.0",
+    "wat-inspector >= 0.3.2"
+]
+
+[tool.uv]
+default-groups = ["test", "lint", "repl"]
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm.version]
+source = "scm"
+fallback_version = "0.0.0.dev"
+
+[tool.pdm.build]
+package-dir = "src_py"
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = [
+    "tests_py"
+]
+addopts = "--import-mode=importlib"
+cache_dir = '/tmp/pytest_cache'
+
+[tool.ruff]
+line-length = 79
+
+[tool.ruff.lint]
+dummy-variable-rgx = "^_{1,2}$"
+select = [
+    "F",
+    "E",
+    "W",
+    "C90",
+    "B",
+    "I",
+    "N",
+    "YTT",
+    "S",
+    "A",
+    "C4",
+    "ICN",
+    "Q003",
+    "PLC",
+    "PLE",
+    "PLR",
+    "PLW",
+    "RUF"
+]
+ignore = [
+    "N818",
+    "PLR5501"
+]
+
+[tool.ruff.lint.isort]
+force-single-line = true
+default-section = "third-party"
+section-order = [
+    "future",
+    "standard-library",
+    "third-party",
+    "first-party",
+    "local-folder"
+]
+known-first-party  = [
+    "templatey"
+]
+
+[tool.ruff.lint.pylint]
+max-args = 7
+
+[tool.ruff.per-file-ignores]
+"tests_py/**" = ["S101", "PLR2004"]
+
+[tool.refurb]
+ignore = []
+
+[tool.pyright]
+# See https://github.com/microsoft/pyright/blob/main/docs/configuration.md
+pythonVersion = "3.13"
+pythonPlatform = "Linux"
+# Not sure how to get import resolution to work for 3rdparty packages. See
+# https://github.com/microsoft/pyright/blob/main/docs/import-resolution.md
+# Might require remote language server from within docker

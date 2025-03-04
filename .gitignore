@@ -1,0 +1,170 @@
+# THESE HAVE BEEN CARRIED AROUND FOR AGES #########################
+
+# Local .terraform directories
+**/.terraform/*
+
+# .tfstate files
+*.tfstate
+*.tfstate.*
+
+# Crash log files
+crash.log
+
+# Ignore any .tfvars files that are generated automatically for each Terraform run. Most
+# .tfvars files are managed as part of configuration and so should be included in
+# version control.
+#
+# example.tfvars
+
+# Ignore override files as they are usually used to override resources locally and so
+# are not checked in
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Include override files you do wish to add to version control using negated pattern
+#
+# !example_override.tf
+
+# Include tfplan files to ignore the plan output of command: terraform plan -out=tfplan
+# example: *tfplan*
+
+# Ignore CLI configuration files
+.terraformrc
+terraform.rc
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyInstaller
+#  Usually these files are written by a python script from a template
+#  before PyInstaller builds the exe, so as to inject date/other infos into it.
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+
+# Translations
+*.mo
+*.pot
+
+# Django stuff:
+*.log
+
+# Sphinx documentation
+docs/_build/
+
+# PyBuilder
+target/
+*.pylog
+tests/logs/
+reference/
+venv/
+
+# PDM stuff
+.pdm-python
+.pdm-build/
+
+# Sublime stuff
+*.sublime-project
+*.sublime-workspace
+
+# JS/svelte stuff
+.idea
+.DS_Store
+.nyc_output
+.vscode
+node_modules
+/node_modules/
+/public/build/
+*.map
+/src/compiler/compile/internal_exports.ts
+/compiler.d.ts
+/compiler.*js
+/index.*js
+/internal
+/store
+/easing
+/motion
+/transition
+/animate
+/scratch/
+/coverage/
+/coverage.lcov
+/test/*/samples/_
+/test/sourcemaps/samples/*/output.js
+/test/sourcemaps/samples/*/output.js.map
+/test/sourcemaps/samples/*/output.css
+/test/sourcemaps/samples/*/output.css.map
+/yarn-error.log
+_actual*.*
+_output
+/types
+/src/node_modules/@sapper/
+yarn-error.log
+/cypress/screenshots/
+/__sapper__/
+.npmrc
+_prompt/
+
+
+
+# SVELTE ADDED THESE ##############################################
+
+test-results
+node_modules
+
+# Output
+.output
+.vercel
+.netlify
+.wrangler
+/.svelte-kit
+/build
+/dist
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
