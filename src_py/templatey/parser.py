@@ -48,6 +48,7 @@ class ParsedTemplateResource:
     # tested against the signature of the actual render function during loading
     function_calls: dict[str, tuple[InterpolatedFunctionCall]] = field(
         compare=False)
+    slots: dict[str, InterpolatedSlot] = field(compare=False)
 
 
 @dataclass(frozen=True)
@@ -78,12 +79,12 @@ class InterpolatedFunctionCall:
     call_kwargs: dict[str, object]
 
 
-@dataclass(frozen=True)
+@dataclass(slots=True, frozen=True)
 class NestedContentReference:
     name: str
 
 
-@dataclass(frozen=True)
+@dataclass(slots=True, frozen=True)
 class NestedVariableReference:
     name: str
 
@@ -146,7 +147,11 @@ def parse(
         slot_names=frozenset(slot_names),
         function_names=frozenset(functions),
         function_calls={
-            name: tuple(calls) for name, calls in functions.items()})
+            name: tuple(calls) for name, calls in functions.items()},
+        slots={
+            maybe_slot.name: maybe_slot
+            for maybe_slot in parts
+            if isinstance(maybe_slot, InterpolatedSlot)})
 
 
 def _extract_nested_refs(value) -> tuple[

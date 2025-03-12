@@ -16,6 +16,7 @@ from templatey.parser import ParsedTemplateResource
 from templatey.parser import parse
 from templatey.renderer import FuncExecutionRequest
 from templatey.renderer import FuncExecutionResult
+from templatey.renderer import render_driver
 from templatey.renderer import render_driver_sync
 from templatey.templates import InjectedValue
 from templatey.templates import TemplateIntersectable
@@ -287,9 +288,22 @@ class RenderEnvironment:
             self,
             template_instance: TemplateParamsInstance
             ) -> str:
-        return ''.join(render_driver_sync(
-            template_instance,
-            render_environment=self))
+        output = []
+        error_collector = []
+        for env_request in render_driver(
+            template_instance, output, error_collector
+        ):
+            for to_load in env_request.to_load:
+                env_request.results_loaded[to_load] = self.load_sync(to_load)
+
+            for to_execute in env_request.to_execute:
+                env_request.results_executed[to_execute.result_key] = (
+                    self.execute_template_function_sync(to_execute))
+
+        if error_collector:
+            raise ExceptionGroup('Failed to render template', error_collector)
+
+        return ''.join(output)
 
     def execute_template_function_sync(
             self,
@@ -297,10 +311,12 @@ class RenderEnvironment:
             ) -> FuncExecutionResult:
         try:
             return FuncExecutionResult(
+                name=request.name,
                 retval=self._template_functions[request.name].function(
                     *request.args, **request.kwargs),
                 exc=None)
         except Exception as exc:
             return FuncExecutionResult(
+                name=request.name,
                 retval=None,
                 exc=exc)

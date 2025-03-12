@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import functools
 import inspect
+import itertools
 import logging
 import typing
+from collections import defaultdict
+from collections import deque
 from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Sequence
 from dataclasses import Field
 from dataclasses import dataclass
+from dataclasses import field
 from dataclasses import fields
 from textwrap import dedent
 from types import EllipsisType
@@ -17,11 +21,12 @@ from typing import Any
 from typing import ClassVar
 from typing import Literal
 from typing import Protocol
+from typing import cast
 from typing import dataclass_transform
 from typing import runtime_checkable
 
 try:
-    from typing import TypeIs  # type: ignore
+    from typing import TypeIs
 except ImportError:
     from typing_extensions import TypeIs
 
@@ -29,6 +34,9 @@ from templatey._annotations import InterfaceAnnotation
 from templatey._annotations import InterfaceAnnotationFlavor
 from templatey.interpolators import NamedInterpolator
 from templatey.parser import InterpolatedVariable
+from templatey.parser import NestedContentReference
+from templatey.parser import NestedVariableReference
+from templatey.parser import ParsedTemplateResource
 
 if typing.TYPE_CHECKING:
     from _typeshed import DataclassInstance
@@ -42,6 +50,8 @@ else:
 TemplateParamsInstance = DataclassInstance
 logger = logging.getLogger(__name__)
 
+
+type TemplateClass = type[TemplateParamsInstance]
 # Technically, these should use the TemplateIntersectable from templates.py,
 # but since we can't define type intersections yet...
 type Slot[T: TemplateParamsInstance] = Annotated[
@@ -168,7 +178,127 @@ class TemplateConfig[T: type, L: object]:
     content_verifier: ContentVerifier
 
 
-@dataclass
+@dataclass(slots=True, frozen=True)
+class TemplateProvenanceNode:
+    """TemplateProvenanceNode instances are unique to the exact location
+    on the exact render tree of a particular template instance. If the
+    template instance gets reused within the same render tree, it will
+    have multiple provenance nodes. And each different slot in a parent
+    will have a separate provenance node, potentially with different
+    namespace overrides.
+
+    This is used both during function execution (to calculate the
+    concrete value of any parameters), and also while flattening the
+    render tree.
+
+    Also note that the root template, **along with any templates
+    injected into the render by environment functions,** will have an
+    empty list of provenance nodes.
+
+    Note that, since overrides from the parent can come exclusively from
+    the template body -- and are therefore shared across all children of
+    the same slot -- they don't get stored within the provenance, since
+    we'd require access to the template bodies, which we don't yet have.
+    """
+    parent_slot_key: str
+    parent_slot_index: int
+    # The reason to have both the instance and the instance ID is so that we
+    # can have hashability of the ID while not imposing an API on the instances
+    instance_id: TemplateInstanceID
+    instance: TemplateParamsInstance = field(compare=False)
+
+
+class TemplateProvenance(tuple[TemplateProvenanceNode]):
+
+    def bind_content(
+            self,
+            name: str,
+            template_preload: dict[TemplateClass, ParsedTemplateResource]
+            ) -> object:
+        """Use this to calculate a concrete value for use in rendering.
+        This walks up the provenance stack, recursively looking for any
+        overrides to the content. If none are found, it returns the
+        value from the childmost instance in the provenance.
+        """
+        # We use the literal ellipsis type as a sentinel for values not being
+        # added yet, so we might as well just continue the trend!
+        current_provenance_node = self[-1]
+        value = getattr(current_provenance_node.instance, name, ...)
+        parent_param_name = name
+        parent_slot_key = current_provenance_node.parent_slot_key
+        for parent in reversed(self[0:-1]):
+            template_class = type(parent.instance)
+            parent_template = template_preload[template_class]
+            parent_overrides = parent_template.slots[parent_slot_key].params
+
+            if parent_param_name in parent_overrides:
+                value = parent_overrides[parent_param_name]
+
+                if isinstance(value, NestedContentReference):
+                    parent_slot_key = parent.parent_slot_key
+                    parent_param_name = value.name
+                    value = ...
+                else:
+                    break
+            else:
+                break
+
+        if value is ...:
+            raise KeyError(
+                'No value found for content with name at slot!',
+                self[-1].instance, name)
+
+        return value
+
+    def bind_variable(
+            self,
+            name: str,
+            template_preload: dict[TemplateClass, ParsedTemplateResource]
+            ) -> object:
+        """Use this to calculate a concrete value for use in rendering.
+        This walks up the provenance stack, recursively looking for any
+        overrides to the variable. If none are found, it returns the
+        value from the childmost instance in the provenance.
+        """
+        # We use the literal ellipsis type as a sentinel for values not being
+        # added yet, so we might as well just continue the trend!
+        current_provenance_node = self[-1]
+        value = getattr(current_provenance_node, name, ...)
+        parent_param_name = name
+        parent_slot_key = current_provenance_node.parent_slot_key
+        for parent in reversed(self[0:-1]):
+            template_class = type(parent.instance)
+            parent_template = template_preload[template_class]
+            parent_overrides = parent_template.slots[parent_slot_key].params
+
+            if parent_param_name in parent_overrides:
+                value = parent_overrides[parent_param_name]
+
+                if isinstance(value, NestedVariableReference):
+                    parent_slot_key = parent.parent_slot_key
+                    parent_param_name = value.name
+                    value = ...
+                else:
+                    break
+            else:
+                break
+
+        if value is ...:
+            raise KeyError(
+                'No value found for content with name at slot!',
+                self[-1].instance, name)
+
+        return value
+
+
+type _SlotTreeNode = tuple[_SlotTreeRoute, ...]
+type _SlotTreeRoute = tuple[str, _SlotTreeNode]
+type TemplateInstanceID = int
+type GroupedTemplateInvocations = dict[TemplateClass, list[TemplateProvenance]]
+type TemplateLookupByID = dict[TemplateInstanceID, TemplateParamsInstance]
+
+
+@dataclass(slots=True)
 class TemplateSignature:
     """This class stores the processed interface based on the params.
     It gets used to compare with the TemplateParse to make sure that
@@ -180,6 +310,220 @@ class TemplateSignature:
     var_names: set[str]
     content: dict[str, type]
     content_names: set[str]
+    _slot_tree_lookup: dict[
+        type[TemplateParamsInstance], _SlotTreeNode] = field(
+            default_factory=dict)
+    # All of these are set during __post_init__
+    get_all_vars: Callable[
+        [TemplateParamsInstance], dict[str, object]] = None  # type: ignore
+    get_var: Callable[
+        [TemplateParamsInstance, str], object] = None #  type: ignore
+    get_all_content: Callable[
+        [TemplateParamsInstance], dict[str, object]] = None  # type: ignore
+    get_content: Callable[
+        [TemplateParamsInstance, str], object] = None #  type: ignore
+
+    def __post_init__(self):
+        tree_wip: dict[type[TemplateParamsInstance], list[_SlotTreeRoute]]
+        tree_wip = defaultdict(list)
+        for parent_slot_name, parent_slot_type in self.slots.items():
+            slot_xable = cast(type[TemplateIntersectable], parent_slot_type)
+            child_lookup = slot_xable._templatey_signature._slot_tree_lookup
+            for child_slot_type, child_slot_tree in child_lookup.items():
+                tree_wip[child_slot_type].append(
+                    (parent_slot_name, child_slot_tree))
+
+            # Note that the empty tuple here denotes that it doesn't have any
+            # children **for the current node.** That doesn't mean that the
+            # child tree doesn't have any other slots of the same type (hence
+            # using append), but we're mapping ALL of the nodes, and NOT just
+            # the leaves.
+            tree_wip[parent_slot_type].append((parent_slot_name, ()))
+
+        for slot_key, route_list in tree_wip.items():
+            self._slot_tree_lookup[slot_key] = tuple(route_list)
+
+        def all_vars_getter(
+                instance: TemplateParamsInstance,
+                _var_names=self.var_names
+                ) -> dict[str, object]:
+            return {name: getattr(instance, name) for name in _var_names}
+
+        def single_var_getter(
+                instance: TemplateParamsInstance,
+                name: str,
+                _var_names=self.var_names
+                ) -> dict[str, object]:
+            if name not in _var_names:
+                raise KeyError('Not a variable!', name)
+            return getattr(instance, name)
+
+        def all_content_getter(
+                instance: TemplateParamsInstance,
+                _content_names=self.content_names
+                ) -> dict[str, object]:
+            return {name: getattr(instance, name) for name in _content_names}
+
+        def single_content_getter(
+                instance: TemplateParamsInstance,
+                name: str,
+                _content_names=self.content_names
+                ) -> dict[str, object]:
+            if name not in _content_names:
+                raise KeyError('Not a content!', name)
+            return getattr(instance, name)
+
+        self.get_all_vars = all_vars_getter
+        self.get_var = single_var_getter
+        self.get_all_content = all_content_getter
+        self.get_content = single_content_getter
+
+    def apply_slot_tree(
+            self,
+            root_template_instance: TemplateParamsInstance
+            ) -> tuple[GroupedTemplateInvocations, TemplateLookupByID]:
+        """
+        """
+        template_lookup: TemplateLookupByID = {}
+        template_invocations: GroupedTemplateInvocations = defaultdict(list)
+        # The actual logic here can be pretty confusing. The comments should
+        # help, but the test cases -- both of building and using the slot
+        # tree -- are extremely helpful when following through the logic. If
+        # you need to understand this, I recommend rubber-ducking it with a
+        # few of those test cases.
+        current_subtree: _SlotTreeNode
+        slot_class_invocations: list[TemplateProvenance]
+
+        child_slot_name: str | None
+        child_routes: tuple[_SlotTreeRoute, ...]
+        sibling_routes: list[_SlotTreeRoute]
+        # Backlog is a stack of stacks. The outer stack corresponds to the
+        # depth of the slot tree; the inner stack corresponds to siblings at
+        # a given depth level.
+        # The purpose is to keep track of the current search path, so that we
+        # can back out and try other ROUTE siblings (attribute keys! not
+        # instances!) after exhausting a tree branch.
+        backlog: list[list[_SlotTreeRoute]]
+        # Visited is a single stack. The outer list (the stack) corresponds to
+        # the depth of the slot tree; the inner list (not a stack) corresponds
+        # to all discovered instances at that depth level.
+        # The purpose is to keep track of all instances at a particular tree
+        # depth, so that when we pop depth levels off the backlog, we can
+        # recover all of the previousls-discovered instances (templates! not
+        # attribute key strings!) from the shallower depth level
+        visited: list[list[TemplateProvenanceNode]]
+
+        instances_at_child_slot_name: list[Sequence[TemplateParamsInstance]]
+
+        for slot_class, current_subtree in self._slot_tree_lookup.items():
+            slot_class_invocations = []
+            # We need to initialize the search first, based on the passed
+            # parameters. We'll then mutate the backlog and visited structures
+            # in-place while performing our search.
+            (child_slot_name, child_routes), *sibling_routes = current_subtree
+            backlog = [sibling_routes]
+
+            # Note that:
+            # 1.. the final provenance needs to be a tuple (subclass),
+            #     requiring this to be copied anyways
+            # 2.. the root node is never supposed to show up in the provenance
+            # 3.. therefore, we can (at basically no cost) simply index the
+            #     tuple from visited[1:]
+            # 4.. therefore, the meaningless slot key and slot index are a
+            #     perfectly reasonable way to bootstrap this in a typesafe way
+            #     that avoids needless "is not None" checks
+            visited = [[TemplateProvenanceNode(
+                parent_slot_key='',
+                parent_slot_index=0,
+                instance_id=id(root_template_instance),
+                instance=root_template_instance)]]
+
+            while child_slot_name is not None:
+                print(child_slot_name)
+                print(visited[-1])
+                # [*root_instance.foo]
+                slot_counter = itertools.count()
+                print(visited[-1][0])
+                print('---')
+                print(getattr(visited[-1][0].instance, child_slot_name))
+
+                # This is actually a list of a list after this call
+
+                instances_at_child_slot_name = [
+                    getattr(template_provenance.instance, child_slot_name)
+                    for template_provenance in visited[-1]]
+                provenances_at_child_slot_name = (
+                    TemplateProvenanceNode(
+                        parent_slot_key=child_slot_name,
+                        parent_slot_index=next(slot_counter),
+                        instance_id=id(child_instance),
+                        instance=child_instance)
+                    for child_instance in instances_at_child_slot_name)
+
+                print('#####')
+                print(provenances_at_child_slot_name)
+
+                # This means that the slot tree has more depth to it that we
+                # still need to explore, so we'll be pushing to both stacks.
+                if child_routes:
+                    # ('bar', (...), (...)), []
+                    (child_slot_name, child_routes), *sibling_routes = (
+                        child_routes)
+
+                    visited.append(list(provenances_at_child_slot_name))
+                    backlog.append(sibling_routes)
+
+                # This means that we've reached the deepest point of this
+                # particular slot tree branch. That means we found an instance,
+                # and need to add it to the found instances, before continuing
+                # on with either a sibling, or by popping out one depth level.
+                else:
+                    # Other options tried for appending the current provenance:
+                    # ++  a custom def _append(iter, val): yield from iter;
+                    #     yield val
+                    # ++  nested generator comprehensions
+                    # ++  itertools.chain
+                    # This was faster than any of the competitors, and probably
+                    # also the easiest to understand.
+                    parent_provenance_nodes = tuple(
+                        provenances[-1] for provenances in visited[1:])
+                    slot_class_invocations.extend(
+                        TemplateProvenance(
+                            (*parent_provenance_nodes, child_provenance))
+                        for child_provenance
+                        in provenances_at_child_slot_name)
+                    child_slot_name = None
+
+                    # The while here is in case we need to back out multiple
+                    # depth levels
+                    while child_slot_name is None and backlog:
+                        print('#####')
+                        print(backlog[-1])
+                        # The current depth level has siblings, so we need to
+                        # search down their branches
+                        if backlog[-1]:
+                            child_slot_name, child_routes = backlog[-1].pop()
+                        # There are no more siblings at the current branch
+                        # depth. That means we need to pop both stacks to
+                        # decrease depth by one, and then continue the search
+                        # at that level.
+                        else:
+                            backlog.pop()
+                            visited.pop()
+
+            template_invocations[slot_class].extend(slot_class_invocations)
+
+        # Last but not least, don't forget the root!
+        template_invocations[type(root_template_instance)].append(
+            TemplateProvenance((
+                TemplateProvenanceNode(
+                    parent_slot_key='',
+                    parent_slot_index=-1,
+                    instance_id=id(root_template_instance),
+                    instance=root_template_instance),)),)
+        template_lookup[id(root_template_instance)] = root_template_instance
+
+        return template_invocations, template_lookup
 
 
 @dataclass_transform()
@@ -199,10 +543,6 @@ def make_template_definition[T: type](
     cls = dataclass(**dataclass_kwargs)(cls)
     cls._templatey_config = template_config
     cls._templatey_resource_locator = template_resource_locator
-
-    cls._templatey_signature = template_signature = TemplateSignature(
-        slots={}, slot_names=set(), vars_={}, var_names=set(), content={},
-        content_names=set())
 
     # We're prioritizing the typical case here, where the templates are defined
     # at the module toplevel, and therefore accessible within the module
@@ -241,6 +581,12 @@ def make_template_definition[T: type](
                 ))
             raise exc
 
+    slots = {}
+    slot_names = set()
+    vars_ = {}
+    var_names = set()
+    content = {}
+    content_names = set()
     for template_field in fields(cls):
         field_classification = _classify_interface_field_flavor(
             template_type_hints, template_field)
@@ -261,18 +607,25 @@ def make_template_definition[T: type](
             # when classifying, but that makes testing easier and control flow
             # clearer
             if field_flavor is InterfaceAnnotationFlavor.VARIABLE:
-                dest_lookup = template_signature.vars_
-                dest_names = template_signature.var_names
+                dest_lookup = vars_
+                dest_names = var_names
             elif field_flavor is InterfaceAnnotationFlavor.SLOT:
-                dest_lookup = template_signature.slots
-                dest_names = template_signature.slot_names
+                dest_lookup = slots
+                dest_names = slot_names
             else:
-                dest_lookup = template_signature.content
-                dest_names = template_signature.content_names
+                dest_lookup = content
+                dest_names = content_names
 
             dest_lookup[template_field.name] = wrapped_type
             dest_names.add(template_field.name)
 
+    cls._templatey_signature = TemplateSignature(
+        slots=slots,
+        slot_names=slot_names,
+        vars_=vars_,
+        var_names=var_names,
+        content=content,
+        content_names=content_names)
     return cls
 
 
