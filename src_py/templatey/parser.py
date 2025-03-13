@@ -6,6 +6,7 @@ import re
 import string
 from collections import defaultdict
 from collections.abc import Collection
+from collections.abc import Generator
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
@@ -31,7 +32,7 @@ class ParsedTemplateResource:
     when validating the template (within some render context).
     """
     parts: tuple[
-        str
+        LiteralTemplateString
         | InterpolatedSlot
         | InterpolatedContent
         | InterpolatedVariable
@@ -51,32 +52,45 @@ class ParsedTemplateResource:
     slots: dict[str, InterpolatedSlot] = field(compare=False)
 
 
-@dataclass(frozen=True)
+class LiteralTemplateString(str):
+    part_index: int
+
+    def __new__(cls, *args, part_index: int, **kwargs):
+        instance = super().__new__(cls, *args, **kwargs)
+        instance.part_index = part_index
+        return instance
+
+
+@dataclass(frozen=True, slots=True)
 class InterpolatedContent:
+    part_index: int
     # TODO: this needs a way to define any variables used by the content via
     # ComplexContent! Otherwise, strict mode in template/interface validation
     # will always fail with interpolated content.
     name: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class InterpolatedSlot:
+    part_index: int
     name: str
     params: dict[str, object]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class InterpolatedVariable:
+    part_index: int
     name: str
     format_spec: str | None
     conversion: str | None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class InterpolatedFunctionCall:
+    part_index: int
     name: str
-    call_args: list[object]
-    call_kwargs: dict[str, object]
+    call_args: list[object] = field(compare=False)
+    call_kwargs: dict[str, object] = field(compare=False)
 
 
 @dataclass(slots=True, frozen=True)
@@ -188,7 +202,17 @@ def _extract_nested_refs(value) -> tuple[
     return content_refs, var_refs
 
 
-def _wrap_formatter_parse(formattable_template_str: str, do_untransform=False):
+def _wrap_formatter_parse(
+        formattable_template_str: str,
+        do_untransform=False
+        ) -> Generator[
+            LiteralTemplateString
+                | InterpolatedSlot
+                | InterpolatedContent
+                | InterpolatedVariable
+                | InterpolatedFunctionCall,
+            None,
+            None]:
     """A generator. Wraps the very weird API provided by
     string.Formatter.parse, instead yielding either:
     ++  literal text, in string format
@@ -197,6 +221,7 @@ def _wrap_formatter_parse(formattable_template_str: str, do_untransform=False):
     ++  ``InterpolatedVariable`` instances
     ++  ``InterpolatedAssetFunction`` instances
     """
+    part_counter = itertools.count()
     formatter = string.Formatter()
 
     for format_tuple in formatter.parse(formattable_template_str):
@@ -215,9 +240,13 @@ def _wrap_formatter_parse(formattable_template_str: str, do_untransform=False):
 
         if literal_text is not None:
             if do_untransform:
-                yield untransform_unicode_control(literal_text)
+                yield LiteralTemplateString(
+                    untransform_unicode_control(literal_text),
+                    part_index=next(part_counter))
             else:
-                yield literal_text
+                yield LiteralTemplateString(
+                    literal_text,
+                    part_index=next(part_counter))
 
         # field_name can be None, an empty string, or a kwargname.
         # None means there's no formatting field left in the string -- in which
@@ -225,12 +254,14 @@ def _wrap_formatter_parse(formattable_template_str: str, do_untransform=False):
         if field_name is None:
             continue
         else:
-            yield _coerce_interpolation(field_name, format_spec, conversion)
+            yield _coerce_interpolation(
+                field_name, format_spec, conversion, part_counter)
 
 
-def _coerce_interpolation(field_name, format_spec, conversion):
+def _coerce_interpolation(field_name, format_spec, conversion, part_counter):
     if (match := _VAR_MATCHER.match(field_name)) is not None:
         return InterpolatedVariable(
+            part_index=next(part_counter),
             name=match.group(1),
             format_spec=format_spec or None,
             conversion=conversion or None)
@@ -253,7 +284,10 @@ def _coerce_interpolation(field_name, format_spec, conversion):
                 'Invalid slot parameters!',
                 field_name, format_spec, conversion) from exc
 
-        return InterpolatedSlot(name=match.group(1), params=kwargs)
+        return InterpolatedSlot(
+            part_index=next(part_counter),
+            name=match.group(1),
+            params=kwargs)
 
     # The format spec is determined by the first : in the interpolation. Any
     # following :s are included as part of it. However, in the rest of these,
@@ -265,7 +299,9 @@ def _coerce_interpolation(field_name, format_spec, conversion):
         full_interpolation_def = field_name
 
     if (match := _CONTENT_MATCHER.match(full_interpolation_def)) is not None:
-        return InterpolatedContent(name=match.group(1))
+        return InterpolatedContent(
+            part_index=next(part_counter),
+            name=match.group(1))
 
     if (match := _FUNC_MATCHER.match(full_interpolation_def)) is not None:
         try:
@@ -275,6 +311,7 @@ def _coerce_interpolation(field_name, format_spec, conversion):
                 'Invalid asset function call signature',
                 field_name, format_spec, conversion) from exc
         return InterpolatedFunctionCall(
+            part_index=next(part_counter),
             name=match.group(1),
             call_args=args,
             call_kwargs=kwargs)

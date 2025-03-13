@@ -281,6 +281,7 @@ class TestRenderEnvironment:
             cast(type[TemplateIntersectable], FakeTemplate),
             ParsedTemplateResource(
                 parts=('foobar', InterpolatedFunctionCall(
+                    part_index=1,
                     name='href',
                     call_args=['foo'],
                     call_kwargs={})),
@@ -406,7 +407,7 @@ class TestRenderEnvironment:
             cast(type[TemplateIntersectable], FakeTemplate),
                 ParsedTemplateResource(
                     parts=('foobar', InterpolatedContent(
-                        name='foo')),
+                        part_index=1, name='foo')),
                     variable_names=frozenset(),
                     content_names=frozenset({'foo'}),
                     slot_names=frozenset(),

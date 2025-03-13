@@ -17,7 +17,6 @@ from templatey.parser import parse
 from templatey.renderer import FuncExecutionRequest
 from templatey.renderer import FuncExecutionResult
 from templatey.renderer import render_driver
-from templatey.renderer import render_driver_sync
 from templatey.templates import InjectedValue
 from templatey.templates import TemplateIntersectable
 from templatey.templates import TemplateParamsInstance

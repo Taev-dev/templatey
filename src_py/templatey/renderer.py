@@ -30,6 +30,7 @@ from templatey.parser import NestedContentReference
 from templatey.parser import NestedVariableReference
 from templatey.parser import ParsedTemplateResource
 from templatey.templates import ComplexContent
+from templatey.templates import EnvFuncInvocation
 from templatey.templates import InjectedValue
 from templatey.templates import TemplateClass
 from templatey.templates import TemplateConfig
@@ -68,62 +69,6 @@ class FuncExecutionResult:
                 if is_template_instance(item):
                     # Hmm, somehow the TypeIs isn't working
                     yield item  # type: ignore
-
-
-def render_driver_sync(
-        template_instance: TemplateParamsInstance,
-        render_environment: RenderEnvironment
-        ) -> Iterable[str]:
-    """This drives the _flatten_and_interpolate coroutine when
-    running in sync mode, and collects all of its errors. More
-    details there!
-    """
-    flattened_or_help_req: TemplateParamsInstance | FuncExecutionRequest | str
-    help_response: None | ParsedTemplateResource | FuncExecutionResult = None
-
-    errors = []
-    render_recursor = _flatten_and_interpolate(
-        template_instance,
-        error_collector=errors)
-    # Note that we **cannot use a for loop here.** The return value of
-    # the call to .send() is the next yield, so if we try to mix together
-    # both a ``for flattened_str_or_template_request in ...`` and a
-    # ``render_recursor.send(...)``, we skip over flattened strings.
-    try:
-        while True:
-            # Note that it's important that we've pre-initialized the
-            # bubbled_request to None, since the first .send() call
-            # MUST ALWAYS be None (as per python spec).
-            flattened_or_help_req = render_recursor.send(help_response)
-            # Always reset this immediately after sending a value, so that
-            # we're less likely to accidentally send the same template
-            # twice due to some other bug (defense in depth / fail loudly)
-            help_response = None
-            # The flattening resulted in a string value, ready for final
-            # rendering
-            if isinstance(flattened_or_help_req, str):
-                yield flattened_or_help_req
-
-            elif isinstance(flattened_or_help_req, FuncExecutionRequest):
-                help_response = (
-                    render_environment.execute_template_function_sync(
-                        flattened_or_help_req))
-
-            # The flattening requires a template resource to continue, so
-            # we need to load it before continuing.
-            else:
-                required_template = type(flattened_or_help_req)
-                try:
-                    help_response = render_environment.load_sync(
-                        required_template)
-                except Exception as exc:
-                    errors.append(exc)
-
-    except StopIteration:
-        pass
-
-    if errors:
-        raise ExceptionGroup('Failed to render template', errors)
 
 
 @dataclass(slots=True)
@@ -228,8 +173,6 @@ def render_driver(
                     in getattr(render_node.instance, next_part.name))))
 
             elif isinstance(next_part, InterpolatedFunctionCall):
-                print('!!!!!')
-                print(context.function_precall)
                 execution_result = context.function_precall[
                     _get_precall_cache_key(render_node.provenance, next_part)]
                 render_node = _build_render_node_for_func_result(
@@ -246,39 +189,6 @@ def render_driver(
 
         except Exception as exc:
             error_collector.append(exc)
-
-
-    return
-    raise NotImplementedError(
-        '''
-        TODO LEFT OFF HERE
-        still need to strip out the id->instance lookup
-        still need to clean up old unused stuff
-        still need to update tests
-
-        the current status is that you have a fully prepopulated
-        render context, including the template preload and function
-        precall. so you should just be able to start actually rendering.
-
-        you need to make a note somewhere though, that the reason you're
-        doing prepopulation separately from the actual rendering is that
-        it makes batching feasible:
-        ++  when prepopulating, the worst combinatorics are based just on
-            the number of slot instances times the number of functions per
-            template
-        ++  during prepopulating, the worst combinatorics are based on
-            the number of template PARTS, times the number of instances
-            per slot.
-        the reason being that you have to temporarily cache everything
-        until you reach the end of the batch.
-
-        the other thing is that in prepopulation, there are clear
-        boundaries between batches, which make it relatively easy to
-        cache things. but during rendering, I think you'd have to build
-        literally the entire render output and cache interim results to
-        be able to batch everything, so it's clearly way better to do it
-        in two steps instead of one.
-        ''')
 
 
 @dataclass(slots=True)
@@ -309,15 +219,24 @@ class _RenderContext:
         and function_precall until either all resources have been
         prepared, or it needs help from the render environment.
         """
-        template_backlog: dict[TemplateClass, list[TemplateProvenance]]
-        function_backlog: list[_PrecallExecutionRequest]
+        # Note that there will only be multiple local roots on any given
+        # loop iteration if a function returns multiple template instances
+        # as a result.
+        template_backlog_local_roots: list[TemplateParamsInstance]
+        template_backlog_included_classes: set[TemplateClass]
+
+        function_backlog: list[EnvFuncInvocation]
         template_preload: dict[TemplateClass, ParsedTemplateResource]
         function_precall: dict[_PrecallCacheKey, FuncExecutionResult]
 
-        root_template_class = cast(TemplateIntersectable, type(root_template))
-        template_backlog, __ = (
-            root_template_class._templatey_signature
-            .apply_slot_tree(root_template))
+        root_template_class = type(root_template)
+        root_template_xable = cast(TemplateIntersectable, root_template_class)
+        # Need to make a copy since we'll be mutating, but we don't need to
+        # check for membership, so we might as well keep it a list
+        template_backlog_local_roots = [root_template]
+        template_backlog_included_classes = set(
+            root_template_xable._templatey_signature.included_template_classes)
+        template_backlog_included_classes.add(type(root_template))
         function_backlog = []
         template_preload = self.template_preload
         function_precall = self.function_precall
@@ -326,53 +245,14 @@ class _RenderContext:
         # and then iterating across all of the template instances; however,
         # this allows us to batch together all of the help requests, which is
         # a huge reduction in runtime overhead
-        while bool(template_backlog) or bool(function_backlog):
-            to_load: list[type[TemplateParamsInstance]] = []
+        while bool(template_backlog_local_roots) or bool(function_backlog):
             to_execute: list[FuncExecutionRequest] = []
-            # These are for keeping track of the things we needed to ask the
-            # render env for help on; we have a bit of post-processing to do
-            # after the render env loads them.
-            to_function_backlog: list[
-                tuple[TemplateClass, list[TemplateProvenance]]] = []
-            to_template_backlog: list[_PrecallCacheKey] = []
 
-            # Always do the template backlog first -- it's responsible for
-            # populating the function backlog!
-            while template_backlog:
-                (template_class,
-                 template_invocations) = template_backlog.popitem()
-
-                # The secondary check here is more for correctness than
-                # performance, since it might even be slower than just updating
-                # the value. But if we change the caching logic to be bounded
-                # size, and if, during loading, another template evicts the
-                # current one, our use of ID for cache keys will cause a
-                # mismatch in the precall lookup.
-                if template_class in template_preload:
-                    parsed_template = template_preload[template_class]
-                    # The combinatorics here get pretty big, but: we're adding
-                    # every combination of (all invocations of that particular
-                    # template class) and (all function calls for that template
-                    # definition) to the function backlog.
-                    function_backlog.extend(itertools.product(
-                        template_invocations,
-                        itertools.chain.from_iterable(
-                            parsed_template.function_calls.values())))
-
-                else:
-                    to_load.append(template_class)
-                    to_function_backlog.append(
-                        (template_class, template_invocations))
-
-            # We've cleared the template backlog, at least for now. Now we need
-            # to execute any funtions that were requested, for all of the
-            # instances that needed them, and store the results. Note that
-            # this might result in loading new template instances, causing
-            # another loop of the outermost while loop.
+            # Note that this will never run on the first iteration of the outer
+            # loop, because we won't have a function backlog until after the
+            # templates have been loaded.
             while function_backlog:
-                print('@@@@@')
                 template_provenance, function_call = function_backlog.pop()
-                print(template_provenance)
                 unescaped_vars = _ParamLookup[object](
                     template_provenance=template_provenance,
                     template_preload=template_preload,
@@ -398,54 +278,53 @@ class _RenderContext:
                     unescaped_vars=unescaped_vars,
                     unverified_content=unverified_content)
 
+                result_cache_key = _get_precall_cache_key(
+                    template_provenance, function_call)
                 to_execute.append(
                     FuncExecutionRequest(
                         function_call.name,
                         args=args,
                         kwargs=kwargs,
-                        result_key=_get_precall_cache_key(
-                            template_provenance, function_call)))
+                        result_key=result_cache_key))
 
             yield RenderEnvRequest(
-                to_load=to_load,
+                to_load=template_backlog_included_classes,
                 to_execute=to_execute,
                 error_collector=self.error_collector,
                 results_loaded=template_preload,
                 results_executed=function_precall)
 
-            for template_class, template_invocations in to_function_backlog:
-                parsed_template = template_preload[template_class]
-                # The combinatorics here get pretty big, but: we're adding
-                # every combination of (all invocations of that particular
-                # template class) and (all function calls for that template
-                # definition) to the function backlog.
-                function_backlog.extend(itertools.product(
-                    template_invocations,
-                    itertools.chain.from_iterable(
-                        parsed_template.function_calls.values())))
+            # Always do this AFTER the env request has been sent; otherwise,
+            # we can't possibly add any more functions to the backlog, because
+            # we won't know anything more about the templates!
+            while template_backlog_local_roots:
+                local_root_template = template_backlog_local_roots.pop()
+                local_root_template_signature = cast(
+                    TemplateIntersectable,
+                    local_root_template)._templatey_signature
 
-            for result_cache_key in to_template_backlog:
+                function_backlog.extend(
+                    local_root_template_signature.extract_function_invocations(
+                        local_root_template, template_preload))
+            template_backlog_included_classes.clear()
+
+            # Now that we've cleared any existing templates from the backlog,
+            # we need to add in any that were created by the functions.
+            # Note that it's possible that the function backlog could return
+            # a new template instance of an already loaded template class. In
+            # that case, we still need to execute the functions there, so the
+            # easiest thing is just to ask for a reload of the template.
+            while to_execute:
+                result_cache_key = to_execute.pop().result_key
                 function_result = function_precall[result_cache_key]
 
                 for injected_template in function_result.filter_injectables():
-                    injected_template_signature = cast(
-                        TemplateIntersectable, injected_template
-                    )._templatey_signature
-
-                    injected_template_invocations, __ = (
-                        injected_template_signature.apply_slot_tree(
-                            injected_template))
-
-                    for template_class, template_provenances in (
-                        injected_template_invocations
-                    ).items():
-                        template_backlog[template_class].extend(
-                            template_provenances)
-
-            to_function_backlog.clear()
-            to_template_backlog.clear()
-            to_load.clear()
-            to_execute.clear()
+                    injected_xable = cast(
+                        TemplateIntersectable, injected_template)
+                    template_backlog_local_roots.append(injected_template)
+                    template_backlog_included_classes.update(
+                        injected_xable._templatey_signature
+                        .included_template_classes)
 
 
 type _PrecallExecutionRequest = tuple[
@@ -461,12 +340,10 @@ def _get_precall_cache_key(
     call, creates the hashable cache key to be used for the render
     context.
     """
-    return (template_provenance, id(interpolated_call))
-
-
-
-
-
+    # Note that template provenance includes the actual current template
+    # instance, so by definition, this encodes exactly which function call
+    # is being referenced
+    return (template_provenance, interpolated_call)
 
 
 def _render_complex_content(
@@ -591,7 +468,10 @@ class _ParamLookup[T]:
                 + 'that flavor', param_flavor)
 
     def __getitem__(self, name: str) -> object:
+        print(f'attempt {name}')
         try:
+            result = self.lookup(name)
+            print(f'??? {name}: {result}')
             return self.lookup(name)
 
         except KeyError as exc:
@@ -605,333 +485,6 @@ class _ParamLookup[T]:
                     name),
                 from_exc=exc))
             return self.placeholder_on_error
-
-
-def _flatten_and_interpolate(
-        template_instance: TemplateParamsInstance,
-        *,
-        # We could, in theory, return a list of errors instead, but it's
-        # cleaner code if we pass in the error collector as a parameter.
-        # It also has the added benefit of avoiding a bunch of .extend()
-        # calls because of the recursion.
-        error_collector: list[Exception],
-        parent_params: dict[str, object] | None = None,
-        ) -> Generator[
-            TemplateParamsInstance | str | FuncExecutionRequest,
-            ParsedTemplateResource | None | FuncExecutionResult,
-            None]:
-    """Okay, this is gonna get messy, so here's the deal.
-    The flattening/interpolation mechanism is messy. We really don't
-    want to need to maintain it twice (once for sync, once for
-    async). But because it's recursive, and because we don't want
-    to recurse over the to-render-tree multiple times, we also need
-    to be loading template resources as we go. That presents a
-    problem, since the loader could be either sync or async, and
-    the call to render could have been either sync or async as well.
-    So that means we either need to implement this whole method
-    twice (and have clearer code, but a higher maintenance burden),
-    or implement it as an old-school coroutine (and have confusing
-    code, but only one version of it to maintain). I'm opting for
-    the former, because I genuinely think this might actually be
-    the route that's less likely to run into problems, as long as
-    it's well documented.
-
-    That being said... I'm not sure if that's going to be really
-    un-performant, so maybe this ends up being a mistake. There's
-    only one way to find out, and that's benchmarking and profiling.
-
-    SO: the way that this works is that we want to flatten out the
-    passed template instance, performing any needed interpolations,
-    and then recursing into any slots. We're passed in a template
-    instance -- ie, the template parameters -- and always request
-    a loaded template resource from the caller by yielding it
-    back.
-    """
-    template_xable = cast(TemplateIntersectable, template_instance)
-    template_config = template_xable._templatey_config
-    all_slots = _ParamLookup[Sequence[TemplateParamsInstance]](
-        template_instance=template_instance,
-        error_collector=error_collector,
-        placeholder_on_error=[],
-        valid_param_names=template_xable._templatey_signature.slot_names)
-
-    # TODO: question: is it worth it to also do type checking of the override
-    # arguments? This would probably imply something like pydantic if you
-    # want to have it be robust, but I'm not entirely sure that this is
-    # a worthwhile tradeoff. Maybe something user-configurable within the
-    # environment?
-    unescaped_vars = _ParamLookup[object](
-        template_instance=template_instance,
-        error_collector=error_collector,
-        placeholder_on_error='',
-        overrides=parent_params,
-        valid_param_names=template_xable._templatey_signature.var_names)
-
-    unverified_content = _ParamLookup[object](
-        template_instance=template_instance,
-        error_collector=error_collector,
-        placeholder_on_error='',
-        valid_param_names=template_xable._templatey_signature.content_names)
-
-    # First of all: request the loaded and parsed template resource from
-    # the caller, all the way back up the recursion chain.
-    parsed_template_resource = (yield template_instance)
-    # This means there was an error in template loading (or a bug in our code.)
-    # Log an info message just in case.
-    if parsed_template_resource is None:
-        logger.info(
-            'Got None in response to template load request. This should '
-            + 'always correspond to an error loading the template, which '
-            + 'should appear in the final ExceptionGroup. If not, please '
-            + 'report a bug with templatey!')
-        return
-    elif not isinstance(parsed_template_resource, ParsedTemplateResource):
-        raise TypeError(
-            'Impossible branch: requested template, got something else!',
-            parsed_template_resource)
-
-    for template_part in parsed_template_resource.parts:
-        yield from _coerce_interpolation(
-            template_part,
-            template_config,
-            unescaped_vars,
-            unverified_content,
-            all_slots,
-            error_collector=error_collector)
-
-
-@singledispatch
-def _coerce_interpolation(
-        template_part,
-        template_config: TemplateConfig,
-        unescaped_vars: dict[str, object],
-        unverified_content: dict[str, object],
-        all_slots: dict[str, Sequence[TemplateParamsInstance]],
-        *,
-        error_collector: list[Exception]
-        ) -> Generator[
-            TemplateParamsInstance | str | FuncExecutionRequest,
-            ParsedTemplateResource | None | FuncExecutionResult,
-            None]:
-    """This is the backstop for interpolation coercion to a string,
-    which will simply raise. That error will in turn be caught by either
-    the parent template (if nested), or the render driver (if toplevel).
-    """
-    raise TypeError(
-        'Impossible branch: invalid template_part type!',
-        template_part)
-
-
-@_coerce_interpolation.register
-def _(
-        template_part: str,
-        template_config: TemplateConfig,
-        unescaped_vars: dict[str, object],
-        unverified_content: dict[str, object],
-        all_slots: dict[str, Sequence[TemplateParamsInstance]],
-        *,
-        error_collector: list[Exception]
-        ) -> Generator[
-            TemplateParamsInstance | str | FuncExecutionRequest,
-            ParsedTemplateResource | None | FuncExecutionResult,
-            None]:
-    """When we encounter a template_part that is an explicit string,
-    that means it was literal text within the template itself, which we
-    assume to be trusted. Therefore we don't need to do any escaping or
-    verification, and can simply yield it back up the call chain.
-    """
-    yield template_part
-
-
-@_coerce_interpolation.register
-def _(
-        template_part: InterpolatedVariable,
-        template_config: TemplateConfig,
-        unescaped_vars: dict[str, object],
-        unverified_content: dict[str, object],
-        all_slots: dict[str, Sequence[TemplateParamsInstance]],
-        *,
-        error_collector: list[Exception]
-        ) -> Generator[
-            TemplateParamsInstance | str | FuncExecutionRequest,
-            ParsedTemplateResource | None | FuncExecutionResult,
-            None]:
-    """When we encounter an interpolated variable, we need to first
-    apply whatever formatting was defined within the template, and then
-    sanitize the resulting value as per the variable escaper in the
-    template config. Note that the order there is important as a defense
-    against obfuscation as a way to bypass the escaper.
-    """
-    unescaped_val = _apply_format(
-        # Note that we've already checked this is defined in
-        # _flatten_and_interpolate, so we don't need .get()
-        unescaped_vars[template_part.name],
-        template_part.conversion,
-        template_part.format_spec)
-    yield template_config.variable_escaper(unescaped_val)
-
-
-@_coerce_interpolation.register
-def _(
-        template_part: InterpolatedContent,
-        template_config: TemplateConfig,
-        unescaped_vars: dict[str, object],
-        unverified_content: dict[str, object],
-        all_slots: dict[str, Sequence[TemplateParamsInstance]],
-        *,
-        error_collector: list[Exception]
-        ) -> Generator[
-            TemplateParamsInstance | str | FuncExecutionRequest,
-            ParsedTemplateResource | None | FuncExecutionResult,
-            None]:
-    """Interpolated content can take either a simple or complicated
-    form. The simple form is just explicit content: some string that was
-    passed in as part of the template parameters. The ComplexContent
-    form, however, can be used to adjust the content based on the
-    variables passed to the template, which can be very useful in
-    situations like localization -- for example, getting quantity/plural
-    alignment.
-
-    In either case, once we have the final content string to include,
-    we need to run a content verifier on it to make sure that it isn't
-    breaking anything, as defined within the template config.
-    """
-    # Note that we've already checked this is defined in
-    # _flatten_and_interpolate, so we don't need .get()
-    val_from_params = unverified_content[template_part.name]
-
-    if isinstance(val_from_params, str):
-        template_config.content_verifier(val_from_params)
-        yield val_from_params
-
-    elif isinstance(val_from_params, ComplexContent):
-        for content_segment in val_from_params.flatten(unescaped_vars):
-            if isinstance(content_segment, str):
-                template_config.content_verifier(content_segment)
-                yield content_segment
-
-            elif isinstance(content_segment, InterpolatedVariable):
-                yield from _coerce_interpolation(
-                    content_segment,
-                    template_config,
-                    unescaped_vars,
-                    unverified_content,
-                    all_slots,
-                    error_collector=error_collector)
-
-            else:
-                error_collector.append(_capture_traceback(TypeError(
-                    'ComplexContent.flatten() must always return strings '
-                    + 'or InterpolatedVariable instances!',
-                    content_segment)))
-
-    else:
-        error_collector.append(_capture_traceback(TypeError(
-            'Interpolated content values must always be strings or '
-            + 'ComplexContent instances!', val_from_params)))
-
-
-@_coerce_interpolation.register
-def _(
-        template_part: InterpolatedSlot,
-        template_config: TemplateConfig,
-        unescaped_vars: dict[str, object],
-        unverified_content: dict[str, object],
-        all_slots: dict[str, Sequence[TemplateParamsInstance]],
-        *,
-        error_collector: list[Exception]
-        ) -> Generator[
-            TemplateParamsInstance | str | FuncExecutionRequest,
-            ParsedTemplateResource | None | FuncExecutionResult,
-            None]:
-    """Interpolated slots need to be recursed into -- that's the whole
-    point of flattening things out.
-    """
-    slots_to_recurse = all_slots[template_part.name]
-    slot_params_from_parent_template = template_part.params
-
-    for slot_to_recurse in slots_to_recurse:
-        try:
-            yield from _flatten_and_interpolate(
-                slot_to_recurse,
-                parent_params=slot_params_from_parent_template,
-                error_collector=error_collector)
-        # Exceptions can bubble out if eg a nested template wasn't found, or
-        # if the signature mismatched, etc.
-        except Exception as exc:
-            error_collector.append(exc)
-
-
-@_coerce_interpolation.register
-def _(
-        template_part: InterpolatedFunctionCall,
-        template_config: TemplateConfig,
-        unescaped_vars: dict[str, object],
-        unverified_content: dict[str, object],
-        all_slots: dict[str, Sequence[TemplateParamsInstance]],
-        *,
-        error_collector: list[Exception]
-        ) -> Generator[
-            TemplateParamsInstance | str | FuncExecutionRequest,
-            ParsedTemplateResource | None | FuncExecutionResult,
-            None]:
-    """Interpolated function calls are a special case. They need to be
-    handled by the outer driver: first, because they might be async,
-    second, because it makes more sense to be executing global template
-    functions in a global context, and third, because the functions are
-    defined all the way up in the template environment, and we don't
-    want to need to pass all of the template functions recursively all
-    the way down the call stack.
-    """
-    args = _recursively_coerce_func_execution_params(
-        template_part.call_args,
-        unescaped_vars=unescaped_vars,
-        unverified_content=unverified_content)
-    kwargs = _recursively_coerce_func_execution_params(
-        template_part.call_kwargs,
-        unescaped_vars=unescaped_vars,
-        unverified_content=unverified_content)
-
-    function_result = (yield FuncExecutionRequest(
-        template_part.name, args=args, kwargs=kwargs))
-    if not isinstance(function_result, FuncExecutionResult):
-        raise TypeError(
-            'Impossible branch: needed template func result, got something '
-            + 'else!', function_result)
-
-    if function_result.exc is not None:
-        error_collector.append(_capture_traceback(
-            TemplateFunctionFailure(
-                'Template function raised!', template_part.name),
-            from_exc=function_result.exc))
-        return
-
-    if function_result.retval is None:
-        raise TypeError(
-            'Impossible branch: template function retval has None for both '
-            + 'exc and retval!')
-
-    for returned_part in function_result.retval:
-        if isinstance(returned_part, str):
-            yield template_config.variable_escaper(returned_part)
-
-        elif isinstance(returned_part, InjectedValue):
-            yield _coerce_injected_value(
-                returned_part,
-                template_config)
-
-        # Note that interpolated function calls MUST supply the full
-        # slot context; you can't add additional variables from the parent
-        # template after the function call returns the bound slot!
-        elif is_template_instance(returned_part):
-            nested_template = cast(TemplateParamsInstance, returned_part)
-            yield from _flatten_and_interpolate(
-                nested_template,
-                error_collector=error_collector)
-
-        else:
-            raise TypeError(
-                'Invalid return from template function', returned_part)
 
 
 @overload

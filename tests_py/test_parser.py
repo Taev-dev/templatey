@@ -19,7 +19,7 @@ class TestParse:
         assert len(parsed.parts) == 3
         assert parsed.parts[0] == 'foo {'
         assert parsed.parts[1] == InterpolatedVariable(
-            name='bar', format_spec='04d', conversion=None)
+            part_index=1, name='bar', format_spec='04d', conversion=None)
         assert parsed.parts[2] == '}'
         assert not parsed.content_names
         assert not parsed.slot_names
@@ -45,7 +45,7 @@ class TestParse:
 
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
-        assert parsed.parts[1] == InterpolatedContent(name='bar')
+        assert parsed.parts[1] == InterpolatedContent(part_index=1, name='bar')
         assert parsed.content_names == frozenset({'bar'})
         assert not parsed.slot_names
         assert not parsed.variable_names
@@ -59,7 +59,7 @@ class TestParse:
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
         assert parsed.parts[1] == InterpolatedVariable(
-            name='bar', format_spec=None, conversion=None)
+            part_index=1, name='bar', format_spec=None, conversion=None)
         assert parsed.variable_names == frozenset({'bar'})
         assert not parsed.content_names
         assert not parsed.slot_names
@@ -72,7 +72,8 @@ class TestParse:
 
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
-        assert parsed.parts[1] == InterpolatedSlot(name='bar', params={})
+        assert parsed.parts[1] == InterpolatedSlot(
+            part_index=1, name='bar', params={})
         assert parsed.slot_names == frozenset({'bar'})
         assert not parsed.content_names
         assert not parsed.variable_names
@@ -86,7 +87,7 @@ class TestParse:
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
         assert parsed.parts[1] == InterpolatedSlot(
-            name='bar', params={'baz': 'zab'})
+            part_index=1, name='bar', params={'baz': 'zab'})
         assert parsed.slot_names == frozenset({'bar'})
         assert not parsed.content_names
         assert not parsed.variable_names
@@ -100,7 +101,8 @@ class TestParse:
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
         assert parsed.parts[1] == InterpolatedSlot(
-            name='bar', params={'baz': NestedContentReference(name='baz')})
+            part_index=1, name='bar',
+            params={'baz': NestedContentReference(name='baz')})
         assert parsed.slot_names == frozenset({'bar'})
         assert parsed.content_names == frozenset({'baz'})
         assert not parsed.variable_names
@@ -114,17 +116,19 @@ class TestParse:
         assert len(parsed.parts) == 4
         assert parsed.parts[0] == 'foo '
         assert parsed.parts[1] == InterpolatedFunctionCall(
-            name='bar', call_args=[], call_kwargs={})
+           part_index=1,  name='bar', call_args=[], call_kwargs={})
         assert parsed.parts[2] == ' '
         assert parsed.parts[3] == InterpolatedFunctionCall(
-            name='bar', call_args=[], call_kwargs={})
+            part_index=3, name='bar', call_args=[], call_kwargs={})
         assert not parsed.slot_names
         assert not parsed.content_names
         assert not parsed.variable_names
         assert parsed.function_names == frozenset({'bar'})
         assert parsed.function_calls['bar'] == (
-            InterpolatedFunctionCall(name='bar', call_args=[], call_kwargs={}),
-            InterpolatedFunctionCall(name='bar', call_args=[], call_kwargs={}))
+            InterpolatedFunctionCall(
+                part_index=1, name='bar', call_args=[], call_kwargs={}),
+            InterpolatedFunctionCall(
+                part_index=3, name='bar', call_args=[], call_kwargs={}))
 
     def test_curlybrace_with_function_params_constant(self):
         template = 'foo {@bar(1, baz="zab")}'
@@ -133,7 +137,10 @@ class TestParse:
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
         assert parsed.parts[1] == InterpolatedFunctionCall(
-            name='bar', call_args=[1], call_kwargs={'baz': 'zab'})
+            part_index=1,
+            name='bar',
+            call_args=[1],
+            call_kwargs={'baz': 'zab'})
         assert not parsed.slot_names
         assert not parsed.content_names
         assert not parsed.variable_names
@@ -147,8 +154,10 @@ class TestParse:
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
         assert parsed.parts[1] == InterpolatedFunctionCall(
+            part_index=1,
             name='bar',
-            call_args=[NestedVariableReference(name='baz')], call_kwargs={})
+            call_args=[NestedVariableReference(name='baz')],
+            call_kwargs={})
         assert not parsed.slot_names
         assert not parsed.content_names
         assert parsed.variable_names == frozenset({'baz'})

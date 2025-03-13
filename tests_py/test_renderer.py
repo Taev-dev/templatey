@@ -17,10 +17,7 @@ from templatey.renderer import FuncExecutionResult
 from templatey.renderer import _apply_format
 from templatey.renderer import _capture_traceback
 from templatey.renderer import _coerce_injected_value
-from templatey.renderer import _coerce_interpolation
-from templatey.renderer import _flatten_and_interpolate
 from templatey.renderer import _recursively_coerce_func_execution_params
-from templatey.renderer import render_driver_sync
 from templatey.templates import InjectedValue
 from templatey.templates import TemplateConfig
 from templatey.templates import template
