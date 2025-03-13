@@ -125,21 +125,27 @@ def render_driver(
                 output.append(next_part)
 
             elif isinstance(next_part, InterpolatedVariable):
+                unescaped_vars = _ParamLookup(
+                    template_provenance=render_node.provenance,
+                    template_preload=context.template_preload,
+                    param_flavor=InterfaceAnnotationFlavor.VARIABLE,
+                    error_collector=error_collector,
+                    placeholder_on_error='')
                 unescaped_val = _apply_format(
-                    # Note that we've already checked this is defined in
-                    # _flatten_and_interpolate, so we don't need .get()
-                    render_node.signature.get_var(
-                        render_node.instance, next_part.name),
+                    unescaped_vars[next_part.name],
                     next_part.conversion,
                     next_part.format_spec)
                 output.append(
                     render_node.config.variable_escaper(unescaped_val))
 
             elif isinstance(next_part, InterpolatedContent):
-                # Note that we've already checked this is defined in
-                # _flatten_and_interpolate, so we don't need .get()
-                val_from_params = render_node.signature.get_content(
-                    render_node.instance, next_part.name)
+                unverified_content = _ParamLookup(
+                    template_provenance=render_node.provenance,
+                    template_preload=context.template_preload,
+                    param_flavor=InterfaceAnnotationFlavor.CONTENT,
+                    error_collector=error_collector,
+                    placeholder_on_error='')
+                val_from_params = unverified_content[next_part.name]
 
                 if isinstance(val_from_params, str):
                     render_node.config.content_verifier(val_from_params)
@@ -148,8 +154,12 @@ def render_driver(
                 else:
                     output.extend(_render_complex_content(
                         val_from_params,
-                        render_node.signature.get_all_vars(
-                            render_node.instance),
+                        _ParamLookup(
+                            template_provenance=render_node.provenance,
+                            template_preload=context.template_preload,
+                            param_flavor=InterfaceAnnotationFlavor.VARIABLE,
+                            error_collector=error_collector,
+                            placeholder_on_error=''),
                         render_node.config,
                         error_collector))
 
@@ -253,13 +263,13 @@ class _RenderContext:
             # templates have been loaded.
             while function_backlog:
                 template_provenance, function_call = function_backlog.pop()
-                unescaped_vars = _ParamLookup[object](
+                unescaped_vars = _ParamLookup(
                     template_provenance=template_provenance,
                     template_preload=template_preload,
                     param_flavor=InterfaceAnnotationFlavor.VARIABLE,
                     error_collector=self.error_collector,
                     placeholder_on_error='')
-                unverified_content = _ParamLookup[object](
+                unverified_content = _ParamLookup(
                     template_provenance=template_provenance,
                     template_preload=template_preload,
                     param_flavor=InterfaceAnnotationFlavor.CONTENT,
@@ -348,7 +358,7 @@ def _get_precall_cache_key(
 
 def _render_complex_content(
         complex_content: ComplexContent | object,
-        unescaped_vars,
+        unescaped_vars: _ParamLookup,
         template_config: TemplateConfig,
         error_collector: list[Exception],
         ) -> Iterable[str]:
@@ -430,8 +440,11 @@ def _build_render_node_for_func_result(
             provenance=None)
 
 
+# Note: it would be nice if we could get a little more clever with the types
+# on this, but having the lookup be passed in as a callable makes it pretty
+# awkward
 @dataclass(slots=True, init=False)
-class _ParamLookup[T]:
+class _ParamLookup(Mapping[str, object]):
     """This is a highly-performant layer of indirection that avoids most
     dictionary copies, but nonetheless allows us to both have helpful
     error messages, and collect all possible errors into a single
@@ -440,8 +453,9 @@ class _ParamLookup[T]:
     """
     template_provenance: TemplateProvenance
     error_collector: list[Exception]
-    placeholder_on_error: T
+    placeholder_on_error: object
     lookup: Callable[[str], object]
+    param_flavor: InterfaceAnnotationFlavor
 
     def __init__(
             self,
@@ -449,10 +463,11 @@ class _ParamLookup[T]:
             template_preload: dict[TemplateClass, ParsedTemplateResource],
             param_flavor: InterfaceAnnotationFlavor,
             error_collector: list[Exception],
-            placeholder_on_error: T):
+            placeholder_on_error: object):
         self.error_collector = error_collector
         self.placeholder_on_error = placeholder_on_error
         self.template_provenance = template_provenance
+        self.param_flavor = param_flavor
 
         if param_flavor is InterfaceAnnotationFlavor.CONTENT:
             self.lookup = partial(
@@ -468,10 +483,7 @@ class _ParamLookup[T]:
                 + 'that flavor', param_flavor)
 
     def __getitem__(self, name: str) -> object:
-        print(f'attempt {name}')
         try:
-            result = self.lookup(name)
-            print(f'??? {name}: {result}')
             return self.lookup(name)
 
         except KeyError as exc:
@@ -486,49 +498,85 @@ class _ParamLookup[T]:
                 from_exc=exc))
             return self.placeholder_on_error
 
+    def __len__(self) -> int:
+        # Note: this is going to be less commonly used (presumably) than just
+        # getitem (the only external access to this is through complex content
+        # flattening), so don't precalculate this during __init__
+        template_instance = self.template_provenance[-1].instance
+        template_xable = cast(TemplateIntersectable, template_instance)
+        if self.param_flavor is InterfaceAnnotationFlavor.CONTENT:
+            return len(template_xable._templatey_signature.content_names)
+        elif self.param_flavor is InterfaceAnnotationFlavor.VARIABLE:
+            return len(template_xable._templatey_signature.var_names)
+        else:
+            raise TypeError(
+                'Internal templatey error: _ParamLookup not supported with '
+                + 'that flavor', self.param_flavor)
+
+    def __iter__(self) -> Iterator[str]:
+        # Note: this is going to be less commonly used (presumably) than just
+        # getitem (the only external access to this is through complex content
+        # flattening), so don't precalculate this during __init__
+        template_instance = self.template_provenance[-1].instance
+        template_xable = cast(TemplateIntersectable, template_instance)
+        if self.param_flavor is InterfaceAnnotationFlavor.CONTENT:
+            return (
+                getattr(template_instance, attr_name)
+                for attr_name
+                in template_xable._templatey_signature.content_names)
+        elif self.param_flavor is InterfaceAnnotationFlavor.VARIABLE:
+            return (
+                getattr(template_instance, attr_name)
+                for attr_name
+                in template_xable._templatey_signature.var_names)
+        else:
+            raise TypeError(
+                'Internal templatey error: _ParamLookup not supported with '
+                + 'that flavor', self.param_flavor)
+
 
 @overload
 def _recursively_coerce_func_execution_params(
         param_value: str,
         *,
-        unescaped_vars: _ParamLookup[object],
-        unverified_content: _ParamLookup[object]
+        unescaped_vars: _ParamLookup,
+        unverified_content: _ParamLookup
         ) -> str: ...
 @overload
 def _recursively_coerce_func_execution_params[K: object, V: object](
         param_value: Mapping[K, V],
         *,
-        unescaped_vars: _ParamLookup[object],
-        unverified_content: _ParamLookup[object]
+        unescaped_vars: _ParamLookup,
+        unverified_content: _ParamLookup
         ) -> dict[K, V]: ...
 @overload
 def _recursively_coerce_func_execution_params[T: object](
         param_value: list[T] | tuple[T],
         *,
-        unescaped_vars: _ParamLookup[object],
-        unverified_content: _ParamLookup[object]
+        unescaped_vars: _ParamLookup,
+        unverified_content: _ParamLookup
         ) -> tuple[T]: ...
 @overload
 def _recursively_coerce_func_execution_params(
         param_value: NestedContentReference | NestedVariableReference,
         *,
-        unescaped_vars: _ParamLookup[object],
-        unverified_content: _ParamLookup[object]
+        unescaped_vars: _ParamLookup,
+        unverified_content: _ParamLookup
         ) -> object: ...
 @overload
 def _recursively_coerce_func_execution_params[T: object](
         param_value: T,
         *,
-        unescaped_vars: _ParamLookup[object],
-        unverified_content: _ParamLookup[object]
+        unescaped_vars: _ParamLookup,
+        unverified_content: _ParamLookup
         ) -> T: ...
 @singledispatch
 def _recursively_coerce_func_execution_params(
         # Note: singledispatch doesn't support type vars
         param_value: object,
         *,
-        unescaped_vars: _ParamLookup[object],
-        unverified_content: _ParamLookup[object]
+        unescaped_vars: _ParamLookup,
+        unverified_content: _ParamLookup
         ) -> object:
     """Templatey templates support references to both content and
     variables as call args/kwargs for template functions. They also
@@ -554,8 +602,8 @@ def _(
         # Note: singledispatch doesn't support type vars
         param_value: list | tuple | dict,
         *,
-        unescaped_vars: _ParamLookup[object],
-        unverified_content: _ParamLookup[object]
+        unescaped_vars: _ParamLookup,
+        unverified_content: _ParamLookup
         ) -> tuple | dict:
     """Again, in the container case, we want to create a new copy of
     the container, replacing its values with the recursive call.
@@ -585,8 +633,8 @@ def _(
         # Note: singledispatch doesn't support type vars
         param_value: str,
         *,
-        unescaped_vars: _ParamLookup[object],
-        unverified_content: _ParamLookup[object]
+        unescaped_vars: _ParamLookup,
+        unverified_content: _ParamLookup
         ) -> str:
     """We need to be careful here to supply a MORE SPECIFIC dispatch
     type than container for strings, since they are technically also
@@ -600,8 +648,8 @@ def _(
 def _(
         param_value: NestedContentReference,
         *,
-        unescaped_vars: _ParamLookup[object],
-        unverified_content: _ParamLookup[object]
+        unescaped_vars: _ParamLookup,
+        unverified_content: _ParamLookup
         ) -> object:
     """Nested content references need to be retrieved from the
     unverified content. Note that this (along with the nested variable
@@ -616,8 +664,8 @@ def _(
 def _(
         param_value: NestedVariableReference,
         *,
-        unescaped_vars: _ParamLookup[object],
-        unverified_content: _ParamLookup[object]
+        unescaped_vars: _ParamLookup,
+        unverified_content: _ParamLookup
         ) -> object:
     """Nested variable references need to be retrieved from the
     unescaped vars. Note that this (along with the nested content

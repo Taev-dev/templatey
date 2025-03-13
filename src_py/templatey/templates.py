@@ -9,6 +9,7 @@ from collections import defaultdict
 from collections import deque
 from collections.abc import Callable
 from collections.abc import Iterable
+from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import Field
 from dataclasses import dataclass
@@ -264,7 +265,7 @@ class TemplateProvenance(tuple[TemplateProvenanceNode]):
         # We use the literal ellipsis type as a sentinel for values not being
         # added yet, so we might as well just continue the trend!
         current_provenance_node = self[-1]
-        value = getattr(current_provenance_node, name, ...)
+        value = getattr(current_provenance_node.instance, name, ...)
         parent_param_name = name
         parent_slot_key = current_provenance_node.parent_slot_key
         for parent in reversed(self[0:-1]):
@@ -286,7 +287,7 @@ class TemplateProvenance(tuple[TemplateProvenanceNode]):
 
         if value is ...:
             raise KeyError(
-                'No value found for content with name at slot!',
+                'No value found for variable with name at slot!',
                 self[-1].instance, name)
 
         return value
@@ -320,11 +321,6 @@ class TemplateSignature:
     content: dict[str, type]
     content_names: frozenset[str]
     included_template_classes: frozenset[type[TemplateParamsInstance]]
-
-    get_all_vars: Callable[[TemplateParamsInstance], dict[str, object]]
-    get_var: Callable[[TemplateParamsInstance, str], object]
-    get_all_content: Callable[[TemplateParamsInstance], dict[str, object]]
-    get_content: Callable[[TemplateParamsInstance, str], object]
 
     # Note that this contains all included types, not just the ones on the
     # outermost layer that are associated with the signature
@@ -365,36 +361,6 @@ class TemplateSignature:
         for slot_key, route_list in tree_wip.items():
             slot_tree_lookup[slot_key] = tuple(route_list)
 
-        def all_vars_getter(
-                instance: TemplateParamsInstance,
-                _var_names=var_names
-                ) -> dict[str, object]:
-            return {name: getattr(instance, name) for name in _var_names}
-
-        def single_var_getter(
-                instance: TemplateParamsInstance,
-                name: str,
-                _var_names=var_names
-                ) -> dict[str, object]:
-            if name not in _var_names:
-                raise KeyError('Not a variable!', name)
-            return getattr(instance, name)
-
-        def all_content_getter(
-                instance: TemplateParamsInstance,
-                _content_names=content_names
-                ) -> dict[str, object]:
-            return {name: getattr(instance, name) for name in _content_names}
-
-        def single_content_getter(
-                instance: TemplateParamsInstance,
-                name: str,
-                _content_names=content_names
-                ) -> dict[str, object]:
-            if name not in _content_names:
-                raise KeyError('Not a content!', name)
-            return getattr(instance, name)
-
         return cls(
             slots=slots,
             slot_names=slot_names,
@@ -402,10 +368,6 @@ class TemplateSignature:
             var_names=var_names,
             content=content,
             content_names=content_names,
-            get_all_vars=all_vars_getter,
-            get_var=single_var_getter,
-            get_all_content=all_content_getter,
-            get_content=single_content_getter,
             _slot_tree_lookup=slot_tree_lookup,
             included_template_classes=frozenset(slot_tree_lookup))
 
@@ -763,7 +725,7 @@ class ComplexContent(Protocol):
 
     def flatten(
             self,
-            unescaped_vars_context: dict[str, object]
+            unescaped_vars_context: Mapping[str, object]
             ) -> Iterable[str | InterpolatedVariable]:
         """Implement this for any instance of complex content. **Note
         that you should never perform the variable interpolation
