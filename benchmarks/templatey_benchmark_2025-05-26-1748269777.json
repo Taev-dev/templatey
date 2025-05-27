@@ -1,0 +1,16 @@
+{
+    "jinja":
+    {
+        "simple.load": 0.0005489416999043897,
+        "simple.render": 0.000013725699856877327,
+        "nested_comp.load": 0.0011756918997270986,
+        "nested_comp.render": 0.00004460130026564002
+    },
+    "templatey":
+    {
+        "simple.load": 7.173997582867742E-7,
+        "simple.render": 0.000020609898841939865,
+        "nested_comp.load": 3.561001503840089E-7,
+        "nested_comp.render": 0.00008437580068130047
+    }
+}
