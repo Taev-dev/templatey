@@ -622,7 +622,7 @@ def make_template_definition[T: type](
 
         # Note: it's not entirely clear to me that this restriction makes
         # sense; I could potentially see MAYBE there being some kind of
-        # template function that could access other attributes from the
+        # environment function that could access other attributes from the
         # dataclass? But also, maybe those should be vars? Again, unclear.
         if field_classification is None:
             raise TypeError(
@@ -698,7 +698,7 @@ def _classify_interface_field_flavor(
 
 @dataclass(frozen=True)
 class InjectedValue:
-    """This is used by template functions to indicate that a value is
+    """This is used by environment functions to indicate that a value is
     being injected into the template by the function. It can indicate
     whether verification, escaping, or both should be applied to the
     value after conversion to a string.

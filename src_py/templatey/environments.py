@@ -23,14 +23,14 @@ from templatey.templates import TemplateParamsInstance
 
 # Note: strings here will be escaped. InjectedValues may decide whether or not
 # escaping should be applied. Nested templates will not be escaped.
-TemplateFunction = Callable[
+EnvFunction = Callable[
     ..., Sequence[str | TemplateParamsInstance | InjectedValue]]
 
 
 @dataclass(frozen=True)
 class _TemplateFunctionContainer:
     name: str
-    function: TemplateFunction
+    function: EnvFunction
     signature: inspect.Signature
 
 
@@ -57,7 +57,7 @@ class AsyncTemplateLoader[L: object](Protocol):
 class RenderEnvironment:
     _parsed_template_cache: dict[
         type[TemplateParamsInstance], ParsedTemplateResource]
-    _template_functions: dict[str, _TemplateFunctionContainer]
+    _env_functions: dict[str, _TemplateFunctionContainer]
     # We use this to prevent registering template functions after any calls
     # to load() have been made, because it would result in different template
     # functions per template
@@ -68,7 +68,7 @@ class RenderEnvironment:
     def __init__(
             self,
             template_loader: SyncTemplateLoader | AsyncTemplateLoader,
-            template_functions: Optional[Iterable[TemplateFunction]] = None,
+            env_functions: Optional[Iterable[EnvFunction]] = None,
             # If True, this will make sure that the template interface exactly
             # matches the template text. If False, this will just make sure
             # that the template interface is at least sufficient for the
@@ -77,9 +77,9 @@ class RenderEnvironment:
         self.strict_interpolation_validation = strict_interpolation_validation
         self._has_loaded_any_template = False
 
-        self._template_functions = {}
-        if template_functions is not None:
-            for function in template_functions:
+        self._env_functions = {}
+        if env_functions is not None:
+            for function in env_functions:
                 self.register_template_function(function)
 
         self._can_load_sync = isinstance(template_loader, SyncTemplateLoader)
@@ -87,18 +87,18 @@ class RenderEnvironment:
         self._template_loader = template_loader
         self._parsed_template_cache = {}
 
-    def register_template_function(self, template_function: TemplateFunction):
+    def register_template_function(self, env_function: EnvFunction):
         if self._has_loaded_any_template:
             raise TemplateyException(
                 'To prevent having different template functions per template, '
                 + 'you cannot register new template functions after loading '
                 + 'any templates in an environment.')
 
-        function_name = template_function.__name__
-        self._template_functions[function_name] = _TemplateFunctionContainer(
+        function_name = env_function.__name__
+        self._env_functions[function_name] = _TemplateFunctionContainer(
             name=function_name,
-            function=template_function,
-            signature=inspect.signature(template_function))
+            function=env_function,
+            signature=inspect.signature(env_function))
 
     async def load_async(
             self,
@@ -190,7 +190,7 @@ class RenderEnvironment:
             else:
                 strict_mode = override_validation_strictness
 
-            self._validate_template_functions(
+            self._validate_env_functions(
                 template_class, parsed_template_resource,)
             self._validate_template_signature(
                 template_class, parsed_template_resource,
@@ -204,7 +204,7 @@ class RenderEnvironment:
         self._parsed_template_cache[template] = parsed_template_resource
         return parsed_template_resource
 
-    def _validate_template_functions(
+    def _validate_env_functions(
             self,
             template_class: type[TemplateIntersectable],
             parsed_template_resource: ParsedTemplateResource
@@ -220,7 +220,7 @@ class RenderEnvironment:
         """
         # Interestingly, .difference() works here, but plain ``-`` doesn't
         function_mismatch = parsed_template_resource.function_names.difference(
-            self._template_functions)
+            self._env_functions)
         if function_mismatch:
             raise MismatchedTemplateEnvironment(
                 'Template environment functions did not match the template '
@@ -229,7 +229,7 @@ class RenderEnvironment:
         for (
             function_name, function_calls
         ) in parsed_template_resource.function_calls.items():
-            function_container = self._template_functions[function_name]
+            function_container = self._env_functions[function_name]
             for function_call in function_calls:
                 try:
                     function_container.signature.bind(
@@ -297,21 +297,21 @@ class RenderEnvironment:
 
             for to_execute in env_request.to_execute:
                 env_request.results_executed[to_execute.result_key] = (
-                    self.execute_template_function_sync(to_execute))
+                    self.execute_env_function_sync(to_execute))
 
         if error_collector:
             raise ExceptionGroup('Failed to render template', error_collector)
 
         return ''.join(output)
 
-    def execute_template_function_sync(
+    def execute_env_function_sync(
             self,
             request: FuncExecutionRequest
             ) -> FuncExecutionResult:
         try:
             return FuncExecutionResult(
                 name=request.name,
-                retval=self._template_functions[request.name].function(
+                retval=self._env_functions[request.name].function(
                     *request.args, **request.kwargs),
                 exc=None)
         except Exception as exc:

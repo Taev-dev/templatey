@@ -52,11 +52,11 @@ class TestRenderEnvironment:
         registry.
         """
         render_env = RenderEnvironment(
-            template_functions=(href,),
+            env_functions=(href,),
             template_loader=DictTemplateLoader())
         assert isinstance(
-            render_env._template_functions['href'], _TemplateFunctionContainer)
-        assert render_env._template_functions['href'].function is href
+            render_env._env_functions['href'], _TemplateFunctionContainer)
+        assert render_env._env_functions['href'].function is href
 
     def test_with_register_func(self):
         """Calling register_template_function must add a function to the
@@ -64,12 +64,12 @@ class TestRenderEnvironment:
         """
         render_env = RenderEnvironment(
             template_loader=DictTemplateLoader())
-        assert not render_env._template_functions
+        assert not render_env._env_functions
 
         render_env.register_template_function(href)
         assert isinstance(
-            render_env._template_functions['href'], _TemplateFunctionContainer)
-        assert render_env._template_functions['href'].function is href
+            render_env._env_functions['href'], _TemplateFunctionContainer)
+        assert render_env._env_functions['href'].function is href
 
     def test_load_sync_success(self):
         """The load_sync wrapper around must successfully invoke
@@ -216,8 +216,8 @@ class TestRenderEnvironment:
         loader.load_async = loader_mock
 
         render_env = RenderEnvironment(template_loader=loader)
-        render_env._validate_template_functions = Mock(
-            spec=render_env._validate_template_functions)
+        render_env._validate_env_functions = Mock(
+            spec=render_env._validate_env_functions)
         render_env._validate_template_signature = Mock(
             spec=render_env._validate_template_signature)
         result = render_env._parse_and_cache(
@@ -228,11 +228,11 @@ class TestRenderEnvironment:
         assert result is mock_parse.return_value
         assert mock_parse.call_count == 1
         assert FakeTemplate in render_env._parsed_template_cache
-        assert render_env._validate_template_functions.call_count == 1
+        assert render_env._validate_env_functions.call_count == 1
         assert render_env._validate_template_signature.call_count == 1
 
-    def test_validate_template_functions_matching_trivial(self):
-        """_validate_template_functions must succeed if the template
+    def test_validate_env_functions_matching_trivial(self):
+        """_validate_env_functions must succeed if the template
         functions defined in the render environment match those defined
         in the template itself.
 
@@ -248,7 +248,7 @@ class TestRenderEnvironment:
         loader.load_async = loader_mock
 
         render_env = RenderEnvironment(template_loader=loader)
-        result = render_env._validate_template_functions(
+        result = render_env._validate_env_functions(
             cast(type[TemplateIntersectable], FakeTemplate),
             ParsedTemplateResource(
                 parts=(LiteralTemplateString('foobar', part_index=0),),
@@ -261,8 +261,8 @@ class TestRenderEnvironment:
 
         assert result
 
-    def test_validate_template_functions_with_matching_function(self):
-        """_validate_template_functions must succeed if the template
+    def test_validate_env_functions_with_matching_function(self):
+        """_validate_env_functions must succeed if the template
         functions defined in the render environment match those defined
         in the template itself.
 
@@ -278,9 +278,9 @@ class TestRenderEnvironment:
         loader.load_async = loader_mock
 
         render_env = RenderEnvironment(
-            template_functions=(href,),
+            env_functions=(href,),
             template_loader=loader)
-        result = render_env._validate_template_functions(
+        result = render_env._validate_env_functions(
             cast(type[TemplateIntersectable], FakeTemplate),
             ParsedTemplateResource(
                 parts=(
@@ -299,8 +299,8 @@ class TestRenderEnvironment:
 
         assert result
 
-    def test_validate_template_functions_with_missing_function(self):
-        """_validate_template_functions must raise
+    def test_validate_env_functions_with_missing_function(self):
+        """_validate_env_functions must raise
         MismatchedTemplateEnvironment if the template defines function
         calls that aren't present inside the current render environment.
         """
@@ -314,7 +314,7 @@ class TestRenderEnvironment:
 
         render_env = RenderEnvironment(template_loader=loader)
         with pytest.raises(MismatchedTemplateEnvironment):
-            render_env._validate_template_functions(
+            render_env._validate_env_functions(
             cast(type[TemplateIntersectable], FakeTemplate),
                 ParsedTemplateResource(
                     parts=(LiteralTemplateString('foobar', part_index=0),),
@@ -329,8 +329,8 @@ class TestRenderEnvironment:
                         call_args=['foo'],
                         call_kwargs={}),)}))
 
-    def test_validate_template_functions_with_mismatched_signature(self):
-        """_validate_template_functions must raise
+    def test_validate_env_functions_with_mismatched_signature(self):
+        """_validate_env_functions must raise
         MismatchedTemplateEnvironment if the template defines function
         calls that don't match the function signature of their actual
         functions.
@@ -344,10 +344,10 @@ class TestRenderEnvironment:
         loader.load_async = loader_mock
 
         render_env = RenderEnvironment(
-            template_functions=(href,),
+            env_functions=(href,),
             template_loader=loader)
         with pytest.raises(MismatchedTemplateEnvironment):
-            render_env._validate_template_functions(
+            render_env._validate_env_functions(
                 cast(type[TemplateIntersectable], FakeTemplate),
                 ParsedTemplateResource(
                     parts=(LiteralTemplateString('foobar', part_index=0),),

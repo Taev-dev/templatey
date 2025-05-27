@@ -53,7 +53,7 @@ class TestApiE2E:
             classes: Var[str]
 
         render_env = RenderEnvironment(
-            template_functions=(href,),
+            env_functions=(href,),
             template_loader=DictTemplateLoader(
                 templates={'test_template': nav}))
         render_env.load_sync(TestTemplate)
@@ -117,7 +117,7 @@ class TestApiE2E:
             main: Content[str]
 
         render_env = RenderEnvironment(
-            template_functions=(href,),
+            env_functions=(href,),
             template_loader=DictTemplateLoader(
                 templates={
                     'page': page,

@@ -172,7 +172,7 @@ def parse(
 def _extract_nested_refs(value) -> tuple[
         set[NestedContentReference], set[NestedVariableReference]]:
     """Call this to recursively extract all of the content and variable
-    references contained within a template function call.
+    references contained within an environment function call.
     """
     content_refs = set()
     var_refs = set()
@@ -220,7 +220,7 @@ def _wrap_formatter_parse(
     ++  ``InterpolatedContent`` instances
     ++  ``InterpolatedSlot`` instances
     ++  ``InterpolatedVariable`` instances
-    ++  ``InterpolatedAssetFunction`` instances
+    ++  ``InterpolatedFunctionCall`` instances
     """
     part_counter = itertools.count()
     formatter = string.Formatter()

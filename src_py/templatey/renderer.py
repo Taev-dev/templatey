@@ -418,7 +418,7 @@ def _build_render_node_for_func_result(
             else:
                 error_collector.append(_capture_traceback(
                     TypeError(
-                        'Invalid return from template function!',
+                        'Invalid return from env function!',
                         execution_result, result_part)))
 
     else:
@@ -428,7 +428,7 @@ def _build_render_node_for_func_result(
                 execution_result)
 
         error_collector.append(_capture_traceback(
-            TemplateFunctionFailure('Template function raised!'),
+            TemplateFunctionFailure('Env function raised!'),
             from_exc=execution_result.exc))
 
     if resulting_parts:
@@ -579,7 +579,7 @@ def _recursively_coerce_func_execution_params(
         unverified_content: _ParamLookup
         ) -> object:
     """Templatey templates support references to both content and
-    variables as call args/kwargs for template functions. They also
+    variables as call args/kwargs for environment functions. They also
     support both iterables (lists) and mappings (dicts) as literals
     within the template, each of which can also reference content and
     variables, and might themselves contain iterables or mappings.
@@ -734,7 +734,7 @@ def _coerce_injected_value(
         template_config: TemplateConfig
         ) -> str:
     """InjectedValue instances are used within the return value of
-    template functions to indicate that the result should be sourced
+    environment functions to indicate that the result should be sourced
     from the variables and/or the content of the current render call.
     This function is responsible for converting the InjectedValue
     instance into the final resulting string to render.
