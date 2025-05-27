@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import itertools
 import logging
-import typing
 from collections.abc import Callable
 from collections.abc import Collection
-from collections.abc import Generator
 from collections.abc import Hashable
 from collections.abc import Iterable
 from collections.abc import Iterator
@@ -14,12 +12,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
 from functools import singledispatch
-from types import EllipsisType
 from typing import cast
 from typing import overload
 
 from templatey._annotations import InterfaceAnnotationFlavor
-from templatey.exceptions import IncompleteTemplateParams
 from templatey.exceptions import MismatchedTemplateSignature
 from templatey.exceptions import TemplateFunctionFailure
 from templatey.parser import InterpolatedContent
@@ -34,16 +30,12 @@ from templatey.templates import EnvFuncInvocation
 from templatey.templates import InjectedValue
 from templatey.templates import TemplateClass
 from templatey.templates import TemplateConfig
-from templatey.templates import TemplateInstanceID
 from templatey.templates import TemplateIntersectable
 from templatey.templates import TemplateParamsInstance
 from templatey.templates import TemplateProvenance
 from templatey.templates import TemplateProvenanceNode
 from templatey.templates import TemplateSignature
 from templatey.templates import is_template_instance
-
-if typing.TYPE_CHECKING:
-    from templatey.environments import RenderEnvironment
 
 logger = logging.getLogger(__name__)
 
@@ -73,8 +65,8 @@ class FuncExecutionResult:
 
 @dataclass(slots=True)
 class RenderEnvRequest:
-    to_load: Iterable[type[TemplateParamsInstance]]
-    to_execute: Iterable[FuncExecutionRequest]
+    to_load: Collection[type[TemplateParamsInstance]]
+    to_execute: Collection[FuncExecutionRequest]
     error_collector: list[Exception]
 
     # These store results; we're adding them inplace instead of needing to
@@ -161,7 +153,8 @@ def render_driver(
                             error_collector=error_collector,
                             placeholder_on_error=''),
                         render_node.config,
-                        error_collector))
+                        error_collector,
+                        parent_part_index=next_part.part_index))
 
             elif isinstance(next_part, InterpolatedSlot):
                 slot_class = render_node.signature.slots[next_part.name]
@@ -197,6 +190,8 @@ def render_driver(
         except StopIteration:
             render_stack.pop()
 
+        # Note: this could be eg a lookup error because of a missing variable.
+        # This isn't redundant with the error collection within prepopulation.
         except Exception as exc:
             error_collector.append(exc)
 
@@ -361,11 +356,16 @@ def _render_complex_content(
         unescaped_vars: _ParamLookup,
         template_config: TemplateConfig,
         error_collector: list[Exception],
+        *,
+        parent_part_index: int,
         ) -> Iterable[str]:
     # Extra typecheck here because we're calling in to this potentially from
     # an unverified context
     if isinstance(complex_content, ComplexContent):
-        for content_segment in complex_content.flatten(unescaped_vars):
+        for content_segment in complex_content.flatten(
+            unescaped_vars,
+            parent_part_index
+        ):
             if isinstance(content_segment, str):
                 template_config.content_verifier(content_segment)
                 yield content_segment

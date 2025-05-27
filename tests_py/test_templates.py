@@ -13,7 +13,8 @@ from templatey.templates import is_template_class
 from templatey.templates import is_template_instance
 from templatey.templates import make_template_definition
 from templatey.templates import template
-from tests_py._utils import fake_template_config
+
+from templatey_testutils import fake_template_config
 
 
 class TestIsTemplateClass:

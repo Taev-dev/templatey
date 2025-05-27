@@ -1,6 +1,12 @@
 version = 1
 requires-python = ">=3.12"
 
+[manifest]
+members = [
+    "templatey",
+    "templatey-testutils",
+]
+
 [[package]]
 name = "anyio"
 version = "4.8.0"
@@ -64,6 +70,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/66/0c/8d907af351aa16b42caae42f9d6aa37b900c67308052d10fdce809f8d952/decorator-5.1.1.tar.gz", hash = "sha256:637996211036b6385ef91435e4fae22989472f9d571faba8927ba8253acbc330", size = 35016 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d5/50/83c593b07763e1161326b3b8c6686f0f4b0f24d5526546bee538c89837d6/decorator-5.1.1-py3-none-any.whl", hash = "sha256:b8c3f85900b9dc423225913c5aace94729fe1fa9763b38939a95226f02d37186", size = 9073 },
+]
+
+[[package]]
+name = "docnote"
+version = "2025.5.26.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7b/5e/aaead2ffc02bcb36bb4fce3c830ad4ddbda3336c91aefe1938943ffae434/docnote-2025.5.26.1.tar.gz", hash = "sha256:c306da125104516cb15c91c3702225db223d61902cfa57f9cfdb5853687fe542", size = 1457 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6f/51/330f1c07cdeeec7bc41c4161d7b1f0aa202b10d24594451d636bed7b74f9/docnote-2025.5.26.1-py3-none-any.whl", hash = "sha256:d6206a8237de3042743a181dd0f3b9b9c3b78a7f02ad0b56b3145ce94c56a0d4", size = 1732 },
 ]
 
 [[package]]
@@ -436,6 +451,7 @@ wheels = [
 name = "templatey"
 source = { editable = "." }
 dependencies = [
+    { name = "docnote" },
     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 
@@ -453,11 +469,15 @@ test = [
     { name = "py-spy" },
     { name = "pytest" },
     { name = "pytest-anyio" },
+    { name = "templatey-testutils" },
     { name = "trio" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "typing-extensions", marker = "python_full_version < '3.13'", specifier = ">=4.12.2" }]
+requires-dist = [
+    { name = "docnote", specifier = ">=2025.5.26.1" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13'", specifier = ">=4.12.2" },
+]
 
 [package.metadata.requires-dev]
 lint = [
@@ -473,8 +493,13 @@ test = [
     { name = "py-spy", specifier = ">=0.4.0" },
     { name = "pytest", specifier = ">=8.1.1" },
     { name = "pytest-anyio", specifier = ">=0.0.0" },
+    { name = "templatey-testutils", editable = "sidecars_py/templatey_testutils" },
     { name = "trio", specifier = ">=0.29.0" },
 ]
+
+[[package]]
+name = "templatey-testutils"
+source = { editable = "sidecars_py/templatey_testutils" }
 
 [[package]]
 name = "traitlets"

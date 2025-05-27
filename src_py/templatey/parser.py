@@ -53,6 +53,7 @@ class ParsedTemplateResource:
 
 
 class LiteralTemplateString(str):
+    __slots__ = ['part_index']
     part_index: int
 
     def __new__(cls, *args, part_index: int, **kwargs):

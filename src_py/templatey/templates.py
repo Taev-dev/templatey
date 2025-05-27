@@ -27,7 +27,7 @@ from typing import dataclass_transform
 from typing import runtime_checkable
 
 try:
-    from typing import TypeIs
+    from typing import TypeIs  # type: ignore
 except ImportError:
     from typing_extensions import TypeIs
 
@@ -725,7 +725,8 @@ class ComplexContent(Protocol):
 
     def flatten(
             self,
-            unescaped_vars_context: Mapping[str, object]
+            unescaped_vars_context: Mapping[str, object],
+            parent_part_index: int,
             ) -> Iterable[str | InterpolatedVariable]:
         """Implement this for any instance of complex content. **Note
         that you should never perform the variable interpolation

@@ -4,8 +4,6 @@ them over when this moves to a dedicated repo.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from templatey.environments import RenderEnvironment
 from templatey.interpolators import NamedInterpolator
 from templatey.prebaked.loaders import DictTemplateLoader

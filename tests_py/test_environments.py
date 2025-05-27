@@ -14,6 +14,7 @@ from templatey.parser import InterpolatedContent
 from templatey.parser import InterpolatedFunctionCall
 from templatey.parser import InterpolatedSlot
 from templatey.parser import InterpolatedVariable
+from templatey.parser import LiteralTemplateString
 from templatey.parser import ParsedTemplateResource
 from templatey.parser import parse
 from templatey.prebaked.loaders import DictTemplateLoader
@@ -21,7 +22,8 @@ from templatey.templates import Slot
 from templatey.templates import TemplateIntersectable
 from templatey.templates import Var
 from templatey.templates import template
-from tests_py._utils import fake_template_config
+
+from templatey_testutils import fake_template_config
 
 
 def href(val: str) -> tuple[str, ...]:
@@ -249,10 +251,11 @@ class TestRenderEnvironment:
         result = render_env._validate_template_functions(
             cast(type[TemplateIntersectable], FakeTemplate),
             ParsedTemplateResource(
-                parts=('foobar',),
+                parts=(LiteralTemplateString('foobar', part_index=0),),
                 variable_names=frozenset(),
                 content_names=frozenset(),
                 slot_names=frozenset(),
+                slots={},
                 function_names=frozenset(),
                 function_calls={}))
 
@@ -280,14 +283,17 @@ class TestRenderEnvironment:
         result = render_env._validate_template_functions(
             cast(type[TemplateIntersectable], FakeTemplate),
             ParsedTemplateResource(
-                parts=('foobar', InterpolatedFunctionCall(
-                    part_index=1,
-                    name='href',
-                    call_args=['foo'],
-                    call_kwargs={})),
+                parts=(
+                    LiteralTemplateString('foobar', part_index=0),
+                    InterpolatedFunctionCall(
+                        part_index=1,
+                        name='href',
+                        call_args=['foo'],
+                        call_kwargs={})),
                 variable_names=frozenset(),
                 content_names=frozenset(),
                 slot_names=frozenset(),
+                slots={},
                 function_names=frozenset({'href'}),
                 function_calls={}))
 
@@ -311,12 +317,14 @@ class TestRenderEnvironment:
             render_env._validate_template_functions(
             cast(type[TemplateIntersectable], FakeTemplate),
                 ParsedTemplateResource(
-                    parts=('foobar',),
+                    parts=(LiteralTemplateString('foobar', part_index=0),),
                     variable_names=frozenset(),
                     content_names=frozenset(),
                     slot_names=frozenset(),
+                    slots={},
                     function_names=frozenset({'href'}),
                     function_calls={'href': (InterpolatedFunctionCall(
+                        part_index=1,
                         name='href',
                         call_args=['foo'],
                         call_kwargs={}),)}))
@@ -342,12 +350,14 @@ class TestRenderEnvironment:
             render_env._validate_template_functions(
                 cast(type[TemplateIntersectable], FakeTemplate),
                 ParsedTemplateResource(
-                    parts=('foobar',),
+                    parts=(LiteralTemplateString('foobar', part_index=0),),
                     variable_names=frozenset(),
                     content_names=frozenset(),
                     slot_names=frozenset(),
+                    slots={},
                     function_names=frozenset({'href'}),
                     function_calls={'href': (InterpolatedFunctionCall(
+                        part_index=1,
                         name='href',
                         call_args=['foo'],
                         call_kwargs={'not_present': True}),)}))
@@ -371,17 +381,20 @@ class TestRenderEnvironment:
             cast(type[TemplateIntersectable], FakeTemplate),
             ParsedTemplateResource(
                 parts=(
-                    'foobar',
+                    LiteralTemplateString('foobar', part_index=0),
                     InterpolatedVariable(
+                        part_index=1,
                         name='foo',
                         format_spec=None,
                         conversion=None),
                     InterpolatedSlot(
+                        part_index=2,
                         name='bar',
                         params={})),
                 variable_names=frozenset({'foo'}),
                 content_names=frozenset(),
                 slot_names=frozenset({'bar'}),
+                slots={},
                 function_names=frozenset(),
                 function_calls={}),
             strict_mode=True)
@@ -406,11 +419,14 @@ class TestRenderEnvironment:
             render_env._validate_template_signature(
             cast(type[TemplateIntersectable], FakeTemplate),
                 ParsedTemplateResource(
-                    parts=('foobar', InterpolatedContent(
-                        part_index=1, name='foo')),
+                    parts=(
+                        LiteralTemplateString('foobar', part_index=0),
+                        InterpolatedContent(
+                            part_index=1, name='foo')),
                     variable_names=frozenset(),
                     content_names=frozenset({'foo'}),
                     slot_names=frozenset(),
+                    slots={},
                     function_names=frozenset(),
                     function_calls={}),
                 strict_mode=True)
@@ -433,10 +449,11 @@ class TestRenderEnvironment:
             render_env._validate_template_signature(
                 cast(type[TemplateIntersectable], FakeTemplate),
                 ParsedTemplateResource(
-                    parts=('foobar'),  # type: ignore
+                    parts=(LiteralTemplateString('foobar', part_index=0),),
                     variable_names=frozenset(),
                     content_names=frozenset(),
                     slot_names=frozenset(),
+                    slots={},
                     function_names=frozenset(),
                     function_calls={}),
                 strict_mode=True)
@@ -458,10 +475,11 @@ class TestRenderEnvironment:
         result = render_env._validate_template_signature(
             cast(type[TemplateIntersectable], FakeTemplate),
             ParsedTemplateResource(
-                parts=('foobar'),  # type: ignore
+                parts=(LiteralTemplateString('foobar', part_index=0),),
                 variable_names=frozenset(),
                 content_names=frozenset(),
                 slot_names=frozenset(),
+                slots={},
                 function_names=frozenset(),
                 function_calls={}),
             strict_mode=False)
