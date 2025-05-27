@@ -6,6 +6,7 @@ from templatey.templates import InjectedValue
 from templatey.templates import Slot
 from templatey.templates import TemplateConfig
 from templatey.templates import Var
+from templatey.templates import template
 
 __all__ = [
     'ComplexContent',
@@ -16,4 +17,5 @@ __all__ = [
     'TemplateConfig',
     'Var',
     'prebaked',
+    'template',
 ]

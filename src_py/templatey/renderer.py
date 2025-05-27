@@ -19,7 +19,6 @@ from typing import overload
 from templatey._annotations import InterfaceAnnotationFlavor
 from templatey._bootstrapping import EMPTY_TEMPLATE_INSTANCE
 from templatey._bootstrapping import EMPTY_TEMPLATE_XABLE
-from templatey._bootstrapping import EmptyTemplate
 from templatey.exceptions import MismatchedTemplateSignature
 from templatey.exceptions import TemplateFunctionFailure
 from templatey.parser import InterpolatedContent

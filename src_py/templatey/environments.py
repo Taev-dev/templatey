@@ -44,7 +44,11 @@ class _TemplateFunctionContainer[F: EnvFunction | EnvFunctionAsync]:
 @runtime_checkable
 class SyncTemplateLoader[L: object](Protocol):
 
-    def load_sync(self, template_resource_locator: L) -> str:
+    def load_sync(
+            self,
+            template: type[TemplateParamsInstance],
+            template_resource_locator: L
+            ) -> str:
         """This is responsible for loading the actual template text,
         based on the passed resource locator.
         """
@@ -54,7 +58,11 @@ class SyncTemplateLoader[L: object](Protocol):
 @runtime_checkable
 class AsyncTemplateLoader[L: object](Protocol):
 
-    async def load_async(self, template_resource_locator: L) -> str:
+    async def load_async(
+            self,
+            template: type[TemplateParamsInstance],
+            template_resource_locator: L
+            ) -> str:
         """This is responsible for loading the actual template text,
         based on the passed resource locator.
         """
@@ -159,6 +167,7 @@ class RenderEnvironment:
         template_loader = cast(AsyncTemplateLoader, self._template_loader)
         template_class = cast(type[TemplateIntersectable], template)
         template_text = await template_loader.load_async(
+            template,
             template_class._templatey_resource_locator)
         return self._parse_and_cache(
             template_class,
@@ -202,6 +211,7 @@ class RenderEnvironment:
         template_loader = cast(SyncTemplateLoader, self._template_loader)
         template_class = cast(type[TemplateIntersectable], template)
         template_text = template_loader.load_sync(
+            template,
             template_class._templatey_resource_locator)
         return self._parse_and_cache(
             template_class,
