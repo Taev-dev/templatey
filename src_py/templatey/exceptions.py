@@ -62,3 +62,9 @@ class TemplateFunctionFailure(Exception):
     Should always be raised ^^from^^ the raised exception, so that its
     traceback is preserved.
     """
+
+
+class MismatchedRenderColor(Exception):
+    """Raised when trying to access an async resource, especially an
+    async environment function, from within a synchronous render call.
+    """

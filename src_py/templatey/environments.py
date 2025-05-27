@@ -1,4 +1,5 @@
 import inspect
+from collections.abc import Awaitable
 from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Sequence
@@ -9,6 +10,7 @@ from typing import Protocol
 from typing import cast
 from typing import runtime_checkable
 
+from templatey.exceptions import MismatchedRenderColor
 from templatey.exceptions import MismatchedTemplateEnvironment
 from templatey.exceptions import MismatchedTemplateSignature
 from templatey.exceptions import TemplateyException
@@ -25,13 +27,16 @@ from templatey.templates import TemplateParamsInstance
 # escaping should be applied. Nested templates will not be escaped.
 EnvFunction = Callable[
     ..., Sequence[str | TemplateParamsInstance | InjectedValue]]
+EnvFunctionAsync = Callable[
+    ..., Awaitable[Sequence[str | TemplateParamsInstance | InjectedValue]]]
 
 
-@dataclass(frozen=True)
-class _TemplateFunctionContainer:
+@dataclass(frozen=True, slots=True)
+class _TemplateFunctionContainer[F: EnvFunction | EnvFunctionAsync]:
     name: str
-    function: EnvFunction
+    function: F
     signature: inspect.Signature
+    is_async: bool
 
 
 @runtime_checkable
@@ -68,7 +73,8 @@ class RenderEnvironment:
     def __init__(
             self,
             template_loader: SyncTemplateLoader | AsyncTemplateLoader,
-            env_functions: Optional[Iterable[EnvFunction]] = None,
+            env_functions:
+                Optional[Iterable[EnvFunction | EnvFunctionAsync]] = None,
             # If True, this will make sure that the template interface exactly
             # matches the template text. If False, this will just make sure
             # that the template interface is at least sufficient for the
@@ -80,14 +86,26 @@ class RenderEnvironment:
         self._env_functions = {}
         if env_functions is not None:
             for function in env_functions:
-                self.register_template_function(function)
+                self.register_env_function(function)
 
         self._can_load_sync = isinstance(template_loader, SyncTemplateLoader)
         self._can_load_async = isinstance(template_loader, AsyncTemplateLoader)
         self._template_loader = template_loader
         self._parsed_template_cache = {}
 
-    def register_template_function(self, env_function: EnvFunction):
+    def register_env_function(
+            self,
+            env_function: EnvFunction | EnvFunctionAsync,
+            *,
+            force_async: bool = False):
+        """Manually register an environment function with the render
+        environment, instead of passing it in to the environment
+        constructor.
+
+        This can be used to force a function to be registerd as async,
+        in case it was not inferred as such, by passing
+        ``force_async=True``.
+        """
         if self._has_loaded_any_template:
             raise TemplateyException(
                 'To prevent having different template functions per template, '
@@ -98,7 +116,8 @@ class RenderEnvironment:
         self._env_functions[function_name] = _TemplateFunctionContainer(
             name=function_name,
             function=env_function,
-            signature=inspect.signature(env_function))
+            signature=inspect.signature(env_function),
+            is_async=force_async or _infer_asyncness(env_function))
 
     async def load_async(
             self,
@@ -309,13 +328,70 @@ class RenderEnvironment:
             request: FuncExecutionRequest
             ) -> FuncExecutionResult:
         try:
+            container = self._env_functions[request.name]
+            if container.is_async:
+                raise MismatchedRenderColor(
+                    'Async env funcs cannot be used within render_sync!')
+
             return FuncExecutionResult(
                 name=request.name,
-                retval=self._env_functions[request.name].function(
-                    *request.args, **request.kwargs),
+                retval=container.function(*request.args, **request.kwargs),
                 exc=None)
         except Exception as exc:
             return FuncExecutionResult(
                 name=request.name,
                 retval=None,
                 exc=exc)
+
+    async def render_async(
+            self,
+            template_instance: TemplateParamsInstance
+            ) -> str:
+        output = []
+        error_collector = []
+        for env_request in render_driver(
+            template_instance, output, error_collector
+        ):
+            for to_load in env_request.to_load:
+                env_request.results_loaded[to_load] = await self.load_async(
+                    to_load)
+
+            for to_execute in env_request.to_execute:
+                env_request.results_executed[to_execute.result_key] = (
+                    await self.execute_env_function_async(to_execute))
+
+        if error_collector:
+            raise ExceptionGroup('Failed to render template', error_collector)
+
+        return ''.join(output)
+
+    async def execute_env_function_async(
+            self,
+            request: FuncExecutionRequest
+            ) -> FuncExecutionResult:
+        try:
+            container = self._env_functions[request.name]
+            if container.is_async:
+                retval = await container.function(
+                    *request.args, **request.kwargs)
+            else:
+                retval = container.function(*request.args, **request.kwargs)
+
+            return FuncExecutionResult(
+                name=request.name,
+                retval=retval,
+                exc=None)
+        except Exception as exc:
+            return FuncExecutionResult(
+                name=request.name,
+                retval=None,
+                exc=exc)
+
+
+def _infer_asyncness(env_function: EnvFunction | EnvFunctionAsync) -> bool:
+    """Infers, based on the type of the function, whether it should be
+    considered sync or async.
+    """
+    return (
+        inspect.iscoroutinefunction(env_function)
+        or inspect.isawaitable(env_function))

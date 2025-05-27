@@ -59,14 +59,14 @@ class TestRenderEnvironment:
         assert render_env._env_functions['href'].function is href
 
     def test_with_register_func(self):
-        """Calling register_template_function must add a function to the
+        """Calling register_env_function must add a function to the
         render env's function registry.
         """
         render_env = RenderEnvironment(
             template_loader=DictTemplateLoader())
         assert not render_env._env_functions
 
-        render_env.register_template_function(href)
+        render_env.register_env_function(href)
         assert isinstance(
             render_env._env_functions['href'], _TemplateFunctionContainer)
         assert render_env._env_functions['href'].function is href

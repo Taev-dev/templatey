@@ -4,6 +4,8 @@ them over when this moves to a dedicated repo.
 """
 from __future__ import annotations
 
+import pytest
+
 from templatey.environments import RenderEnvironment
 from templatey.interpolators import NamedInterpolator
 from templatey.prebaked.loaders import DictTemplateLoader
@@ -124,6 +126,104 @@ class TestApiE2E:
                     'nav': nav}))
 
         render_result = render_env.render_sync(
+            PageTemplate(
+                name='John Doe',
+                title='An example page',
+                main='With some content',
+                nav=[
+                    NavTemplate(
+                        target='/',
+                        name='Home',
+                        classes=...),
+                    NavTemplate(
+                        target='/about',
+                        name='About us',
+                        classes=...)]))
+
+        assert render_result == '''
+            <html>
+            <head><title>An example page</title>
+            <body>
+            <header>
+            </header>
+
+            <nav>
+                <ol>
+                
+            <li>
+                <a href="/" class="navbar">Home</a>
+            </li>
+            <li>
+                <a href="/about" class="navbar">About us</a>
+            </li>
+                </ol>
+            </nav>
+
+            <h1>Dear John Doe</h1>
+            <main>
+                With some content
+            </main>
+            <footer>
+            </footer>
+            </body>
+            </html>
+            '''  # noqa: W293
+
+    @pytest.mark.anyio
+    async def test_playtest_2_async(self):
+        async def href(val: str) -> tuple[str, ...]:
+            return (val,)
+
+        nav = '''
+            <li>
+                <a href="{@href(content.target)}" class="{var.classes}">{
+                    content.name}</a>
+            </li>'''
+
+        page = '''
+            <html>
+            <head><title>{content.title}</title>
+            <body>
+            <header>
+            </header>
+
+            <nav>
+                <ol>
+                {slot.nav: classes='navbar'}
+                </ol>
+            </nav>
+
+            <h1>Dear {var.name}</h1>
+            <main>
+                {content.main}
+            </main>
+            <footer>
+            </footer>
+            </body>
+            </html>
+            '''
+
+        @template(html, 'nav')
+        class NavTemplate:
+            target: Content[str]
+            name: Content[str]
+            classes: Var[str]
+
+        @template(html, 'page')
+        class PageTemplate:
+            name: Var[str]
+            nav: Slot[NavTemplate]
+            title: Content[str]
+            main: Content[str]
+
+        render_env = RenderEnvironment(
+            env_functions=(href,),
+            template_loader=DictTemplateLoader(
+                templates={
+                    'page': page,
+                    'nav': nav}))
+
+        render_result = await render_env.render_async(
             PageTemplate(
                 name='John Doe',
                 title='An example page',

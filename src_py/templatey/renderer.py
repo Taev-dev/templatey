@@ -75,7 +75,7 @@ class RenderEnvRequest:
     results_executed: dict[_PrecallCacheKey, FuncExecutionResult]
 
 
-def render_driver(
+def render_driver(  # noqa: C901
         template_instance: TemplateParamsInstance,
         output: list[str],
         error_collector: list[Exception]
