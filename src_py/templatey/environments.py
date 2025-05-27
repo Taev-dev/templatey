@@ -97,7 +97,8 @@ class RenderEnvironment:
             self,
             env_function: EnvFunction | EnvFunctionAsync,
             *,
-            force_async: bool = False):
+            force_async: bool = False,
+            with_name: str | None = None):
         """Manually register an environment function with the render
         environment, instead of passing it in to the environment
         constructor.
@@ -105,6 +106,10 @@ class RenderEnvironment:
         This can be used to force a function to be registerd as async,
         in case it was not inferred as such, by passing
         ``force_async=True``.
+
+        Normally, registered functions are assigned their __name__ as
+        the function name; manual registration can also be used to
+        override this behavior via the ``with_name`` parameter.
         """
         if self._has_loaded_any_template:
             raise TemplateyException(
@@ -112,7 +117,11 @@ class RenderEnvironment:
                 + 'you cannot register new template functions after loading '
                 + 'any templates in an environment.')
 
-        function_name = env_function.__name__
+        if with_name is None:
+            function_name = env_function.__name__
+        else:
+            function_name = with_name
+
         self._env_functions[function_name] = _TemplateFunctionContainer(
             name=function_name,
             function=env_function,

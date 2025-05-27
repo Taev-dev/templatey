@@ -4,6 +4,7 @@ from datetime import datetime
 from datetime import timezone
 from pathlib import Path
 
+import anyio
 import jinja2
 import pytest
 
@@ -30,7 +31,7 @@ NAV_ITEM_VARS = {
     'name': 'Home'}
 
 
-@template(html, 'nav')
+@template(html, 'nav', slots=True)
 class NavItem:
     link: Var[str]
     classlist: Var[str]
@@ -78,8 +79,71 @@ PAGE_WITH_NAV_VARS = {
 PAGE_WITH_NAV_NESTED_INSTANCE_COUNT = 5
 
 
-@template(html, 'page_with_nav')
+def sync_footer_jinja():
+    return '<footer>Thanks, world, for listening</footer>'
+
+
+def sync_footer_templatey():
+    return ('<footer>Thanks, world, for listening</footer>',)
+
+
+async def async_footer_jinja():
+    await anyio.sleep(0)
+    return '<footer>Thanks, world, for listening</footer>'
+
+
+async def async_footer_templatey():
+    await anyio.sleep(0)
+    return ('<footer>Thanks, world, for listening</footer>',)
+
+
+@template(html, 'page_with_nav', slots=True)
 class PageWithNav:
+    page_title: Var[str]
+    page_content: Var[str]
+    navigation: Slot[NavItem]
+
+
+JINJA_PAGE_WITH_NAV_AND_FOOTER = r'''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>{{page_title}}</title>
+</head>
+<body>
+    <ul id="navigation">
+    {% for navitem in navigation %}
+        <li><a href="{{navitem.link}}" class="{{navitem.classlist}}">{{navitem.name}}</a></li>
+    {% endfor %}
+    </ul>
+
+    <h1>My Webpage</h1>
+    {{page_content}}
+    {{footer_func()}}
+</body>
+</html>
+'''  # noqa: E501
+TEMPLATEY_PAGE_WITH_NAV_AND_FOOTER = '''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>{var.page_title}</title>
+</head>
+<body>
+    <ul id="navigation">
+    {slot.navigation}
+    </ul>
+
+    <h1>My Webpage</h1>
+    {var.page_content}
+    {@footer_func()}
+</body>
+</html>
+'''
+
+
+@template(html, 'page_with_nav_and_footer', slots=True)
+class PageWithNavAndFooter:
     page_title: Var[str]
     page_content: Var[str]
     navigation: Slot[NavItem]
@@ -99,12 +163,13 @@ def benchmark_gatherer():
 
 @pytest.fixture
 def jinja_env() -> jinja2.Environment:
-    return jinja2.Environment(autoescape=True, loader=None)
+    return jinja2.Environment(autoescape=True, loader=None, enable_async=True)
 
 
 @pytest.fixture
 def templatey_env() -> RenderEnvironment:
     loader = DictTemplateLoader(templates={
+        'page_with_nav_and_footer': TEMPLATEY_PAGE_WITH_NAV_AND_FOOTER,
         'page_with_nav': TEMPLATEY_PAGE_WITH_NAV,
         'nav': TEMPLATEY_NAV_ITEM})
     return RenderEnvironment(template_loader=loader)
@@ -239,3 +304,101 @@ class TestBenchmarks:
             elapsed_time += (after - before)
         benchmark_gatherer['templatey']['nested_comp.render'] = (
             elapsed_time / _ITERATION_COUNT)
+
+    def test_nested_component_with_funcs_render_jinja_sync(
+            self, jinja_env, benchmark_gatherer):
+        """Test rendering (and only rendering) a slightly more complex
+        template that includes nested components and function calls.
+        This evaluates how quickly we can create the final
+        output string from a pre-loaded template and its parameters.
+        """
+        elapsed_time = 0
+        template = jinja_env.from_string(JINJA_PAGE_WITH_NAV_AND_FOOTER)
+        navigation = [
+            NAV_ITEM_VARS for __ in range(PAGE_WITH_NAV_NESTED_INSTANCE_COUNT)]
+        for __ in range(_ITERATION_COUNT):
+            before = time.monotonic()
+            template.render(
+                **NAV_ITEM_VARS,
+                navigation=navigation, footer_func=sync_footer_jinja)
+            after = time.monotonic()
+            elapsed_time += (after - before)
+        benchmark_gatherer['jinja']['nested_comp_funky.render.sync'] = (
+                elapsed_time / _ITERATION_COUNT)
+
+    def test_nested_component_with_funcs_render_templatey_sync(
+            self, templatey_env, benchmark_gatherer):
+        """Test rendering (and only rendering) a slightly more complex
+        template that includes nested components and function calls.
+        This evaluates how quickly we can create the final
+        output string from a pre-loaded template and its parameters.
+        """
+        elapsed_time = 0
+        templatey_env.register_env_function(
+            sync_footer_templatey, with_name='footer_func')
+        templatey_env.load_sync(PageWithNavAndFooter)
+        templatey_env.load_sync(PageWithNav)
+        templatey_env.load_sync(NavItem)
+        navigation = tuple(
+            NavItem(**NAV_ITEM_VARS)
+            for __ in range(PAGE_WITH_NAV_NESTED_INSTANCE_COUNT))
+        for __ in range(_ITERATION_COUNT):
+            template = PageWithNavAndFooter(
+                **PAGE_WITH_NAV_VARS, navigation=navigation)
+            before = time.monotonic()
+            templatey_env.render_sync(template)
+            after = time.monotonic()
+            elapsed_time += (after - before)
+        benchmark_gatherer['templatey']['nested_comp_funky.render.sync'] = (
+                elapsed_time / _ITERATION_COUNT)
+
+    @pytest.mark.anyio
+    async def test_nested_component_with_funcs_render_jinja_async(
+            self, jinja_env, benchmark_gatherer, anyio_backend_name):
+        """Test rendering (and only rendering) a slightly more complex
+        template that includes nested components and function calls.
+        This evaluates how quickly we can create the final
+        output string from a pre-loaded template and its parameters.
+        """
+        elapsed_time = 0
+        template = jinja_env.from_string(JINJA_PAGE_WITH_NAV_AND_FOOTER)
+        navigation = [
+            NAV_ITEM_VARS for __ in range(PAGE_WITH_NAV_NESTED_INSTANCE_COUNT)]
+        for __ in range(_ITERATION_COUNT):
+            before = time.monotonic()
+            await template.render_async(
+                **NAV_ITEM_VARS,
+                navigation=navigation, footer_func=async_footer_jinja)
+            after = time.monotonic()
+            elapsed_time += (after - before)
+        benchmark_gatherer['jinja'][
+            f'nested_comp_funky.render.{anyio_backend_name}'] = (
+                elapsed_time / _ITERATION_COUNT)
+
+    @pytest.mark.anyio
+    async def test_nested_component_with_funcs_render_templatey_async(
+            self, templatey_env, benchmark_gatherer, anyio_backend_name):
+        """Test rendering (and only rendering) a slightly more complex
+        template that includes nested components and function calls.
+        This evaluates how quickly we can create the final
+        output string from a pre-loaded template and its parameters.
+        """
+        elapsed_time = 0
+        templatey_env.register_env_function(
+            async_footer_templatey, with_name='footer_func')
+        templatey_env.load_sync(PageWithNavAndFooter)
+        templatey_env.load_sync(PageWithNav)
+        templatey_env.load_sync(NavItem)
+        navigation = tuple(
+            NavItem(**NAV_ITEM_VARS)
+            for __ in range(PAGE_WITH_NAV_NESTED_INSTANCE_COUNT))
+        for __ in range(_ITERATION_COUNT):
+            template = PageWithNavAndFooter(
+                **PAGE_WITH_NAV_VARS, navigation=navigation)
+            before = time.monotonic()
+            await templatey_env.render_async(template)
+            after = time.monotonic()
+            elapsed_time += (after - before)
+        benchmark_gatherer['templatey'][
+            f'nested_comp_funky.render.{anyio_backend_name}'] = (
+                elapsed_time / _ITERATION_COUNT)
