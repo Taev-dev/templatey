@@ -10,6 +10,8 @@ from typing import Protocol
 from typing import cast
 from typing import runtime_checkable
 
+from templatey._bootstrapping import PARSED_EMPTY_TEMPLATE
+from templatey._bootstrapping import EmptyTemplate
 from templatey.exceptions import MismatchedRenderColor
 from templatey.exceptions import MismatchedTemplateEnvironment
 from templatey.exceptions import MismatchedTemplateSignature
@@ -145,6 +147,9 @@ class RenderEnvironment:
             raise TypeError(
                 'Current template loader does not support async loading')
 
+        if template is EmptyTemplate:
+            return PARSED_EMPTY_TEMPLATE
+
         if (
             not force_reload
             and template in self._parsed_template_cache
@@ -176,6 +181,9 @@ class RenderEnvironment:
         if not self._can_load_sync:
             raise TypeError(
                 'Current template loader does not support sync loading')
+
+        if template is EmptyTemplate:
+            return PARSED_EMPTY_TEMPLATE
 
         # Note that cache operations here aren't threadsafe, but as long as
         # the underlying resource doesn't change, the worst case is that we

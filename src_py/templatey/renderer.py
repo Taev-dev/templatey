@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+from collections import deque
 from collections.abc import Callable
 from collections.abc import Collection
 from collections.abc import Hashable
@@ -16,6 +17,9 @@ from typing import cast
 from typing import overload
 
 from templatey._annotations import InterfaceAnnotationFlavor
+from templatey._bootstrapping import EMPTY_TEMPLATE_INSTANCE
+from templatey._bootstrapping import EMPTY_TEMPLATE_XABLE
+from templatey._bootstrapping import EmptyTemplate
 from templatey.exceptions import MismatchedTemplateSignature
 from templatey.exceptions import TemplateFunctionFailure
 from templatey.parser import InterpolatedContent
@@ -75,7 +79,7 @@ class RenderEnvRequest:
     results_executed: dict[_PrecallCacheKey, FuncExecutionResult]
 
 
-def render_driver(  # noqa: C901
+def render_driver(
         template_instance: TemplateParamsInstance,
         output: list[str],
         error_collector: list[Exception]
@@ -178,10 +182,12 @@ def render_driver(  # noqa: C901
             elif isinstance(next_part, InterpolatedFunctionCall):
                 execution_result = context.function_precall[
                     _get_precall_cache_key(render_node.provenance, next_part)]
-                render_node = _build_render_node_for_func_result(
-                    execution_result, render_node.config, error_collector)
-                if render_node is not None:
-                    render_stack.append(render_node)
+                nested_render_nodes = _build_render_node_for_func_result(
+                    execution_result,
+                    render_node.config,
+                    error_collector,
+                    context.template_preload)
+                render_stack.extend(nested_render_nodes)
 
             else:
                 raise TypeError(
@@ -394,11 +400,13 @@ def _render_complex_content(
 def _build_render_node_for_func_result(
         execution_result: FuncExecutionResult,
         template_config: TemplateConfig,
-        error_collector: list[Exception]
-        ) -> _RenderStackNode | None:
+        error_collector: list[Exception],
+        template_preload: dict[TemplateClass, ParsedTemplateResource]
+        ) -> Iterable[_RenderStackNode]:
     """This constructs a _RenderNode for the given execution result and
     returns it (or None, if there was an error).
     """
+    has_nested_templates = False
     resulting_parts: list[str | TemplateParamsInstance] = []
     if execution_result.exc is None:
         if execution_result.retval is None:
@@ -414,6 +422,7 @@ def _build_render_node_for_func_result(
                 resulting_parts.append(
                     _coerce_injected_value(result_part, template_config))
             elif is_template_instance(result_part):
+                has_nested_templates = True
                 resulting_parts.append(result_part)
             else:
                 error_collector.append(_capture_traceback(
@@ -432,12 +441,84 @@ def _build_render_node_for_func_result(
             from_exc=execution_result.exc))
 
     if resulting_parts:
-        return _RenderStackNode(
-            instance=None,
-            parts=iter(resulting_parts),
-            config=None,
-            signature=None,
-            provenance=None)
+        if has_nested_templates:
+            return _build_render_stack_extension(
+                resulting_parts,
+                template_config,
+                template_preload)
+
+        # This is an optimization that skips a bunch of copies and stack
+        # reordering if the function didn't have any nested templates
+        else:
+            return [_RenderStackNode(
+                parts=iter(cast(list[str], resulting_parts)),
+                config=EMPTY_TEMPLATE_XABLE._templatey_config,
+                signature=EMPTY_TEMPLATE_XABLE._templatey_signature,
+                provenance=TemplateProvenance(),
+                instance=EMPTY_TEMPLATE_INSTANCE)]
+
+    return ()
+
+
+def _build_render_stack_extension(
+        func_result_parts: list[str | TemplateParamsInstance],
+        parent_template_config: TemplateConfig,
+        template_preload: dict[TemplateClass, ParsedTemplateResource]
+        ) -> deque[_RenderStackNode]:
+    """Our render stack needs to be structured in a particular way, but
+    the results from a function execution may interleave plain strings
+    with nested templates. This handles converting the parts into a
+    flattened list of stack nodes that preserves part order while still
+    maintaining provenance etc.
+    """
+    nodes: deque[_RenderStackNode] = deque()
+    current_node_parts: list[str] = []
+
+    for func_result_part in func_result_parts:
+        if isinstance(func_result_part, str):
+            current_node_parts.append(func_result_part)
+
+        else:
+            if current_node_parts:
+                nodes.append(_RenderStackNode(
+                    parts=iter(current_node_parts),
+                    config=EMPTY_TEMPLATE_XABLE._templatey_config,
+                    signature=EMPTY_TEMPLATE_XABLE._templatey_signature,
+                    provenance=TemplateProvenance(),
+                    instance=EMPTY_TEMPLATE_INSTANCE))
+                # Make sure to create a new one so we don't screw up our iter()
+                current_node_parts = []
+
+            template_xable = cast(TemplateIntersectable, func_result_part)
+            nodes.append(
+                _RenderStackNode(
+                    parts=iter(
+                        template_preload[type(func_result_part)].parts),
+                    config=template_xable._templatey_config,
+                    signature=template_xable._templatey_signature,
+                    provenance=TemplateProvenance((
+                        TemplateProvenanceNode(
+                            parent_slot_key='',
+                            parent_slot_index=-1,
+                            instance_id=id(func_result_part),
+                            instance=func_result_part),)),
+                    instance=func_result_part))
+
+    # We have to do this one last time in case there were any trailing strings
+    # after the last nested template instance
+    if current_node_parts:
+        nodes.append(_RenderStackNode(
+            parts=iter(current_node_parts),
+            config=EMPTY_TEMPLATE_XABLE._templatey_config,
+            signature=EMPTY_TEMPLATE_XABLE._templatey_signature,
+            provenance=TemplateProvenance(),
+            instance=EMPTY_TEMPLATE_INSTANCE))
+    # Rationale: the nodes are currently in order of first encountered to
+    # last encountered, which is the opposite of a stack. By simply reversing
+    # them, we can then just extend them onto the existing render stack, easy
+    # peasy.
+    nodes.reverse()
+    return nodes
 
 
 # Note: it would be nice if we could get a little more clever with the types
