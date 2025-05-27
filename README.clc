@@ -11,3 +11,17 @@ to pypi, since that was always the end goal.
 
 So feel free to use it, but let the buyer beware: there are probably some
 rough edges here! Not the least of which is a complete lack of docs.
+
+
+> Slots, vars, content
+    ++  slots are nested components
+    ++  vars are interpolated variables. These get escaped, and might be
+        untrusted.
+    ++  content is stuff that's variable, **but trusted**. This is something
+        you yourself define, and is meant to facilitate reusability.
+        Additionally, templatey has a notion of complex content, which
+        allows you to vary the result of a particular content segment based
+        on a variable. This can be useful if you, for example, want to apply
+        a correct plural based on some quantity contained in a variable.
+
+``part_index`` -- it looks like this is maybe just used for debugging?

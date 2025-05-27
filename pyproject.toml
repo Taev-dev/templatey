@@ -23,7 +23,6 @@ test = [
 
 lint = [
     "ruff >= 0.3.3",
-    "refurb >= 2.0.0"
 ]
 
 repl = [
