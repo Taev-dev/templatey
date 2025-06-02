@@ -2,6 +2,8 @@ from typing import Annotated
 
 from docnote import ClcNote
 
+from templatey.templates import TemplateParamsInstance
+
 
 def xml_attrify(
         attrs: dict[str, str],
@@ -50,3 +52,11 @@ def xml_attrify(
             retval.append(' ')
 
         return retval
+
+
+def inject[T: TemplateParamsInstance](template: T) -> tuple[T]:
+    """This is a very simple function to wrap a passed template instance
+    into a tuple, allowing it to be used as an environment function.
+    This is useful for dynamically injecting templates into parents.
+    """
+    return (template,)

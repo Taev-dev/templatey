@@ -409,6 +409,11 @@ dependencies = [
     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
 
+[package.optional-dependencies]
+async-prebaked = [
+    { name = "anyio" },
+]
+
 [package.dev-dependencies]
 lint = [
     { name = "ruff" },
@@ -428,6 +433,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", marker = "extra == 'async-prebaked'", specifier = ">=4.6.2" },
     { name = "docnote", specifier = ">=2025.5.26.1" },
     { name = "typing-extensions", marker = "python_full_version < '3.13'", specifier = ">=4.12.2" },
 ]

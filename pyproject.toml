@@ -11,6 +11,11 @@ dependencies = [
     "typing_extensions>=4.12.2; python_version < '3.13'",
 ]
 
+[project.optional-dependencies]
+async_prebaked = [
+    "anyio >= 4.6.2",
+]
+
 [dependency-groups]
 test = [
     "jinja2>=3.1.5",

@@ -8,6 +8,7 @@ import pytest
 
 from templatey.environments import RenderEnvironment
 from templatey.interpolators import NamedInterpolator
+from templatey.prebaked.env_funcs import inject
 from templatey.prebaked.loaders import DictTemplateLoader
 from templatey.prebaked.template_configs import html
 from templatey.prebaked.template_configs import html_escaper
@@ -253,6 +254,98 @@ class TestApiE2E:
             </li>
             <li>
                 <a href="/about" class="navbar">About us</a>
+            </li>
+                </ol>
+            </nav>
+
+            <h1>Dear John Doe</h1>
+            <main>
+                With some content
+            </main>
+            <footer>
+            </footer>
+            </body>
+            </html>
+            '''  # noqa: W293
+
+    def test_playtest_injection(self):
+        """Injecting dynamic templates into a parent must work without
+        error and produce the expected result.
+        """
+        def href(val: str) -> tuple[str, ...]:
+            return (val,)
+
+        nav = '''
+            <li>
+                <a href="{@href(content.target)}" class="{var.classes}">{
+                    content.name}</a>
+            </li>'''
+
+        page = '''
+            <html>
+            <head><title>{content.title}</title>
+            <body>
+            <header>
+            </header>
+
+            <nav>
+                <ol>
+                {@inject(content.nav)}
+                </ol>
+            </nav>
+
+            <h1>Dear {var.name}</h1>
+            <main>
+                {content.main}
+            </main>
+            <footer>
+            </footer>
+            </body>
+            </html>
+            '''
+
+        @template(html, 'nav')
+        class NavTemplate:
+            target: Content[str]
+            name: Content[str]
+            classes: Var[str]
+
+        @template(html, 'page')
+        class PageTemplate:
+            name: Var[str]
+            nav: Content[NavTemplate]
+            title: Content[str]
+            main: Content[str]
+
+        render_env = RenderEnvironment(
+            env_functions=(href, inject),
+            template_loader=DictTemplateLoader(
+                templates={
+                    'page': page,
+                    'nav': nav}))
+
+        render_result = render_env.render_sync(
+            PageTemplate(
+                name='John Doe',
+                title='An example page',
+                main='With some content',
+                nav=NavTemplate(
+                        target='/',
+                        name='Home',
+                        classes='navbar')))
+
+        assert render_result == '''
+            <html>
+            <head><title>An example page</title>
+            <body>
+            <header>
+            </header>
+
+            <nav>
+                <ol>
+                
+            <li>
+                <a href="/" class="navbar">Home</a>
             </li>
                 </ol>
             </nav>

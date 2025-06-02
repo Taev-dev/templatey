@@ -335,6 +335,8 @@ class _RenderContext:
                     template_backlog_included_classes.update(
                         injected_xable._templatey_signature
                         .included_template_classes)
+                    template_backlog_included_classes.add(
+                        type(injected_template))
 
 
 type _PrecallExecutionRequest = tuple[
@@ -570,9 +572,11 @@ class _ParamLookup(Mapping[str, object]):
             self.error_collector.append(_capture_traceback(
                 MismatchedTemplateSignature(
                     'Template referenced invalid param in a way that was not '
-                    + 'caught during template loading. This likely indicates '
+                    + 'caught during template loading. This could indicate '
                     + 'referencing eg a slot as content, content as var, etc. '
-                    + 'Or it could be a bug in templatey.',
+                    + 'Or it could indicate an ellipsis being passed in as '
+                    + 'the value for a template parameter. Or it could be a '
+                    + 'bug in templatey.',
                     self.template_provenance[-1].instance,
                     name),
                 from_exc=exc))
