@@ -288,6 +288,21 @@ class _RenderContext:
                     unescaped_vars=unescaped_vars,
                     unverified_content=unverified_content)
 
+                if function_call.call_args_exp is not None:
+                    args = (*args, *cast(
+                        Iterable,
+                        _recursively_coerce_func_execution_params(
+                            function_call.call_args_exp,
+                            unescaped_vars=unescaped_vars,
+                            unverified_content=unverified_content)))
+
+                if function_call.call_kwargs_exp is not None:
+                    kwargs.update(cast(
+                        Mapping, _recursively_coerce_func_execution_params(
+                            function_call.call_kwargs_exp,
+                            unescaped_vars=unescaped_vars,
+                            unverified_content=unverified_content)))
+
                 result_cache_key = _get_precall_cache_key(
                     template_provenance, function_call)
                 to_execute.append(

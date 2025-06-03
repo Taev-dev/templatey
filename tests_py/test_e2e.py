@@ -464,3 +464,50 @@ class TestApiE2E:
             </body>
             </html>
             '''  # noqa: W293
+
+    def test_starexp_funcs(self):
+        """Star expansion must work, even when passed references.
+        """
+        def func_with_starrings(
+                *args: str,
+                **kwargs: str
+                ) -> tuple[str, ...]:
+            return (
+                *(str(arg) for arg in args),
+                *kwargs,
+                *kwargs.values())
+
+        test_html_config = TemplateConfig(
+            interpolator=NamedInterpolator.CURLY_BRACES,
+            variable_escaper=html_escaper,
+            content_verifier=html_verifier)
+
+        nav = '''
+            {@func_with_starrings(
+                content.single_string,
+                *content.multistring,
+                **var.dict_)}
+            '''
+
+        @template(test_html_config, 'test_template')
+        class TestTemplate:
+            single_string: Content[str]
+            multistring: Content[list[str]]
+            dict_: Var[dict[str, str]]
+
+        render_env = RenderEnvironment(
+            env_functions=(func_with_starrings,),
+            template_loader=DictTemplateLoader(
+                templates={'test_template': nav}))
+        render_env.load_sync(TestTemplate)
+        render_result = render_env.render_sync(
+            TestTemplate(
+                single_string='foo',
+                multistring=['oof', 'bar', 'rab'],
+                # Note: this also verifies escaping is working even in a
+                # recursive context
+                dict_={'baz': 'zab', 'html': '<p>'}))
+
+        assert render_result == '''
+            foooofbarrabbazhtmlzab&lt;p&gt;
+            '''

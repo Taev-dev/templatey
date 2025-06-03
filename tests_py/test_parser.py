@@ -115,20 +115,40 @@ class TestParse:
 
         assert len(parsed.parts) == 4
         assert parsed.parts[0] == 'foo '
-        assert parsed.parts[1] == InterpolatedFunctionCall(
-           part_index=1,  name='bar', call_args=[], call_kwargs={})
+        assert InterpolatedFunctionCall(
+            call_args_exp=None,
+            call_kwargs_exp=None,
+            part_index=1,
+            name='bar',
+            call_args=[],
+            call_kwargs={})._matches(parsed.parts[1])
         assert parsed.parts[2] == ' '
-        assert parsed.parts[3] == InterpolatedFunctionCall(
-            part_index=3, name='bar', call_args=[], call_kwargs={})
+        assert InterpolatedFunctionCall(
+            call_args_exp=None,
+            call_kwargs_exp=None,
+            part_index=3,
+            name='bar',
+            call_args=[],
+            call_kwargs={})._matches(parsed.parts[3])
         assert not parsed.slot_names
         assert not parsed.content_names
         assert not parsed.variable_names
         assert parsed.function_names == frozenset({'bar'})
         assert parsed.function_calls['bar'] == (
             InterpolatedFunctionCall(
-                part_index=1, name='bar', call_args=[], call_kwargs={}),
+                call_args_exp=None,
+                call_kwargs_exp=None,
+                part_index=1,
+                name='bar',
+                call_args=[],
+                call_kwargs={}),
             InterpolatedFunctionCall(
-                part_index=3, name='bar', call_args=[], call_kwargs={}))
+                call_args_exp=None,
+                call_kwargs_exp=None,
+                part_index=3,
+                name='bar',
+                call_args=[],
+                call_kwargs={}))
 
     def test_curlybrace_with_function_params_constant(self):
         template = 'foo {@bar(1, baz="zab")}'
@@ -136,11 +156,13 @@ class TestParse:
 
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
-        assert parsed.parts[1] == InterpolatedFunctionCall(
+        assert InterpolatedFunctionCall(
+            call_args_exp=None,
+            call_kwargs_exp=None,
             part_index=1,
             name='bar',
             call_args=[1],
-            call_kwargs={'baz': 'zab'})
+            call_kwargs={'baz': 'zab'})._matches(parsed.parts[1])
         assert not parsed.slot_names
         assert not parsed.content_names
         assert not parsed.variable_names
@@ -153,11 +175,52 @@ class TestParse:
 
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
-        assert parsed.parts[1] == InterpolatedFunctionCall(
+        assert InterpolatedFunctionCall(
+            call_args_exp=None,
+            call_kwargs_exp=None,
             part_index=1,
             name='bar',
             call_args=[NestedVariableReference(name='baz')],
-            call_kwargs={})
+            call_kwargs={})._matches(parsed.parts[1])
+        assert not parsed.slot_names
+        assert not parsed.content_names
+        assert parsed.variable_names == frozenset({'baz'})
+        assert parsed.function_names == frozenset({'bar'})
+        assert 'bar' in parsed.function_calls
+
+    def test_curlybrace_with_function_params_var_ref_arg_expansion(self):
+        template = 'foo {@bar(*var.baz)}'
+        parsed = parse(template, NamedInterpolator.CURLY_BRACES)
+
+        assert len(parsed.parts) == 2
+        assert parsed.parts[0] == 'foo '
+        assert InterpolatedFunctionCall(
+            call_args_exp=NestedVariableReference(name='baz'),
+            call_kwargs_exp=None,
+            part_index=1,
+            name='bar',
+            call_args=[],
+            call_kwargs={})._matches(parsed.parts[1])
+        assert not parsed.slot_names
+        assert not parsed.content_names
+        assert parsed.variable_names == frozenset({'baz'})
+        assert parsed.function_names == frozenset({'bar'})
+        assert 'bar' in parsed.function_calls
+
+    def test_curlybrace_with_function_params_var_ref_kwarg_expansion(self):
+        template = 'foo {@bar(**var.baz)}'
+        parsed = parse(template, NamedInterpolator.CURLY_BRACES)
+
+        assert len(parsed.parts) == 2
+        assert parsed.parts[0] == 'foo '
+        print(parsed.parts[1])
+        assert InterpolatedFunctionCall(
+            call_args_exp=None,
+            call_kwargs_exp=NestedVariableReference(name='baz'),
+            part_index=1,
+            name='bar',
+            call_args=[],
+            call_kwargs={})._matches(parsed.parts[1])
         assert not parsed.slot_names
         assert not parsed.content_names
         assert parsed.variable_names == frozenset({'baz'})

@@ -109,6 +109,8 @@ class TestRenderDriver:
             assert isinstance(render_context, _RenderContext)
 
             fake_interpolated_call = InterpolatedFunctionCall(
+                call_args_exp=None,
+                call_kwargs_exp=None,
                 part_index=3,
                 name='fakefunc',
                 call_args=[],
@@ -254,6 +256,8 @@ class TestRenderContext:
             function_precall={},
             error_collector=[])
         fake_interpolated_call = InterpolatedFunctionCall(
+            call_args_exp=None,
+            call_kwargs_exp=None,
             part_index=2,
             name='fakefunc',
             call_args=[],
@@ -297,6 +301,63 @@ class TestRenderContext:
                         name=exe_req.name, retval=('foo'), exc=None))
 
         assert request_count == 2
+
+    def test_template_with_func_with_expansion(self):
+        """Prepopulation with a function including arg/kwarg expansion
+        must include those args and kwargs within the resulting
+        call_args and call_kwargs for the execution request.
+        """
+        @template(fake_template_config, object())
+        class FakeTemplate:
+            var1: Var[str]
+
+        ctx = _RenderContext(
+            template_preload={},
+            function_precall={},
+            error_collector=[])
+        fake_interpolated_call = InterpolatedFunctionCall(
+            call_args_exp=['oof'],
+            call_kwargs_exp={'baz': 'zab'},
+            part_index=2,
+            name='fakefunc',
+            call_args=['foo'],
+            call_kwargs={'bar': 'rab'})
+
+        exe_req = None
+        request_count = 0
+        for request in ctx.prepopulate(FakeTemplate(var1='foo')):
+            request_count += 1
+
+            if request.to_load:
+                assert not request.to_execute
+                assert len(request.to_load) == 1
+                assert FakeTemplate in request.to_load
+
+                request.results_loaded[FakeTemplate] = ParsedTemplateResource(
+                    parts=(fake_interpolated_call,),
+                    variable_names=frozenset({'var1'}),
+                    content_names=frozenset(),
+                    slot_names=frozenset(),
+                    slots={},
+                    function_names=frozenset({'fakefunc'}),
+                    function_calls={'fakefunc': (fake_interpolated_call,)})
+
+            else:
+                # Note that this is just because we're on the first level of
+                # function. Deeper nesting could result in both to_load and
+                # to_execute being defined on the same request.
+                assert not request.to_load
+                assert len(request.to_execute) == 1
+                exe_req, = request.to_execute
+
+                request.results_executed[exe_req.result_key] = (
+                    FuncExecutionResult(
+                        name=exe_req.name, retval=('foo'), exc=None))
+
+        assert request_count == 2
+        assert exe_req is not None
+        assert exe_req.args == ('foo', 'oof')
+        assert exe_req.kwargs == {'bar': 'rab', 'baz': 'zab'}
 
 
 class TestRecursivelyCoerceFuncExecutionParams:

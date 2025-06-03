@@ -4,6 +4,7 @@ from typing import cast
 from unittest.mock import Mock
 from unittest.mock import patch
 
+import anyio
 import pytest
 
 from templatey.environments import RenderEnvironment
@@ -18,6 +19,8 @@ from templatey.parser import LiteralTemplateString
 from templatey.parser import ParsedTemplateResource
 from templatey.parser import parse
 from templatey.prebaked.loaders import DictTemplateLoader
+from templatey.renderer import FuncExecutionRequest
+from templatey.renderer import FuncExecutionResult
 from templatey.templates import Slot
 from templatey.templates import TemplateIntersectable
 from templatey.templates import Var
@@ -29,6 +32,27 @@ from templatey_testutils import fake_template_config
 def href(val: str) -> tuple[str, ...]:
     """A fake template function."""
     return (val,)
+
+
+def func_with_starrings(
+        *args: str,
+        **kwargs: str
+        ) -> tuple[str, ...]:
+    return (
+        *(str(arg) for arg in args),
+        *kwargs,
+        *kwargs.values())
+
+
+async def func_with_starrings_async(
+        *args: str,
+        **kwargs: str
+        ) -> tuple[str, ...]:
+    await anyio.sleep(0)
+    return (
+        *(str(arg) for arg in args),
+        *kwargs,
+        *kwargs.values())
 
 
 @template(fake_template_config, 'fake_global')
@@ -286,6 +310,8 @@ class TestRenderEnvironment:
                 parts=(
                     LiteralTemplateString('foobar', part_index=0),
                     InterpolatedFunctionCall(
+                        call_args_exp=None,
+                        call_kwargs_exp=None,
                         part_index=1,
                         name='href',
                         call_args=['foo'],
@@ -324,6 +350,8 @@ class TestRenderEnvironment:
                     slots={},
                     function_names=frozenset({'href'}),
                     function_calls={'href': (InterpolatedFunctionCall(
+                        call_args_exp=None,
+                        call_kwargs_exp=None,
                         part_index=1,
                         name='href',
                         call_args=['foo'],
@@ -357,6 +385,8 @@ class TestRenderEnvironment:
                     slots={},
                     function_names=frozenset({'href'}),
                     function_calls={'href': (InterpolatedFunctionCall(
+                        call_args_exp=None,
+                        call_kwargs_exp=None,
                         part_index=1,
                         name='href',
                         call_args=['foo'],
@@ -485,3 +515,36 @@ class TestRenderEnvironment:
             strict_mode=False)
 
         assert result
+
+    def test_execute_env_function_sync(self):
+        """An env function execution must successfully execute.
+        """
+        render_env = RenderEnvironment(
+            env_functions=(func_with_starrings,),
+            template_loader=DictTemplateLoader())
+        request = FuncExecutionRequest(
+            name='func_with_starrings',
+            args=['foo'],
+            kwargs={'bar': 'baz'},
+            result_key=object())
+
+        result = render_env.execute_env_function_sync(request)
+        assert isinstance(result, FuncExecutionResult)
+        assert result.retval == ('foo', 'bar', 'baz')
+
+    @pytest.mark.anyio
+    async def test_execute_env_function_async(self):
+        """An env function execution must successfully execute.
+        """
+        render_env = RenderEnvironment(
+            env_functions=(func_with_starrings_async,),
+            template_loader=DictTemplateLoader())
+        request = FuncExecutionRequest(
+            name='func_with_starrings_async',
+            args=['foo'],
+            kwargs={'bar': 'baz'},
+            result_key=object())
+
+        result = await render_env.execute_env_function_async(request)
+        assert isinstance(result, FuncExecutionResult)
+        assert result.retval == ('foo', 'bar', 'baz')

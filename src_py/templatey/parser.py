@@ -91,7 +91,31 @@ class InterpolatedFunctionCall:
     part_index: int
     name: str
     call_args: list[object] = field(compare=False)
+    call_args_exp: object | None = field(compare=False)
     call_kwargs: dict[str, object] = field(compare=False)
+    call_kwargs_exp: object | None = field(compare=False)
+
+    def _matches(self, other: object) -> bool:
+        """Okay, so the problem is as follows:
+        1.. We need to be able to check equality during testing
+        2.. We need hashing in other places
+        3.. We can't mess with equality, because it would break the
+            dict keys we need from the hash
+        4.. Therefore, we need to exempt the call args / etc from the
+            normal equality check, but still need something for testing
+        Therefore, we create this, which checks everything -- but just
+        for testing.
+        """
+        if not isinstance(other, InterpolatedFunctionCall):
+            return False
+
+        return (
+            self.part_index == other.part_index
+            and self.name == other.name
+            and self.call_args == other.call_args
+            and self.call_args_exp == other.call_args_exp
+            and self.call_kwargs == other.call_kwargs
+            and self.call_kwargs_exp == other.call_kwargs_exp)
 
 
 @dataclass(slots=True, frozen=True)
@@ -146,7 +170,10 @@ def parse(
 
         elif isinstance(part, InterpolatedFunctionCall):
             for maybe_reference in itertools.chain(
-                part.call_args, part.call_kwargs.values()
+                part.call_args,
+                part.call_kwargs.values(),
+                (starargs for starargs in (part.call_args_exp,)),
+                (starkwargs for starkwargs in (part.call_kwargs_exp,))
             ):
                 nested_content_refs, nested_var_refs = _extract_nested_refs(
                     maybe_reference)
@@ -275,10 +302,13 @@ def _coerce_interpolation(field_name, format_spec, conversion, part_counter):
     if (match := _SLOT_MATCHER.match(field_name)) is not None:
         slot_params_str = format_spec.strip()
         try:
-            args, kwargs = _extract_call_signature(slot_params_str)
+            args, starargs, kwargs, starkwargs = _extract_call_signature(
+                slot_params_str)
 
-            if args:
-                raise ValueError('Slot parameters are keyword-only!')
+            if args or starargs or starkwargs:
+                raise ValueError(
+                    'Slot parameters are keyword-only and do not support arg '
+                    + 'expansion!')
 
         except (ValueError, SyntaxError) as exc:
             raise InvalidTemplateInterpolation(
@@ -306,7 +336,8 @@ def _coerce_interpolation(field_name, format_spec, conversion, part_counter):
 
     if (match := _FUNC_MATCHER.match(full_interpolation_def)) is not None:
         try:
-            args, kwargs = _extract_call_signature(match.group(2))
+            args, starargs, kwargs, starkwargs = _extract_call_signature(
+                match.group(2))
         except (ValueError, SyntaxError) as exc:
             raise InvalidTemplateInterpolation(
                 'Invalid asset function call signature',
@@ -315,7 +346,9 @@ def _coerce_interpolation(field_name, format_spec, conversion, part_counter):
             part_index=next(part_counter),
             name=match.group(1),
             call_args=args,
-            call_kwargs=kwargs)
+            call_args_exp=starargs,
+            call_kwargs=kwargs,
+            call_kwargs_exp=starkwargs,)
 
     raise InvalidTemplateInterpolation(
         'Unknown target for templatey interpolation',
@@ -328,14 +361,24 @@ def _extract_call_signature(str_signature):
     injected_print = cast(ast.Call, cast(ast.Expr, tree.body[0]).value)
 
     args = []
+    starargs = None
     kwargs = {}
+    starkwargs = None
 
     for ast_arg in injected_print.args:
-        args.append(_extract_reference_or_literal(ast_arg))
-    for ast_kwarg in injected_print.keywords:
-        kwargs[ast_kwarg.arg] = _extract_reference_or_literal(ast_kwarg.value)
+        if isinstance(ast_arg, ast.Starred):
+            starargs = _extract_reference_or_literal(ast_arg.value)
+        else:
+            args.append(_extract_reference_or_literal(ast_arg))
 
-    return args, kwargs
+    for ast_kwarg in injected_print.keywords:
+        if ast_kwarg.arg is None:
+            starkwargs = _extract_reference_or_literal(ast_kwarg.value)
+        else:
+            kwargs[ast_kwarg.arg] = _extract_reference_or_literal(
+                ast_kwarg.value)
+
+    return args, starargs, kwargs, starkwargs
 
 
 @singledispatch
