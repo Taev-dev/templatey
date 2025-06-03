@@ -85,7 +85,8 @@ class CompanionFileLoader(AsyncTemplateLoader[str], SyncTemplateLoader[str]):
                 + 'actual modules!')
 
         module_dir = Path(module_file).parent
-        return (module_dir / template_resource_locator).read_text()
+        return (module_dir / template_resource_locator).read_text(
+            encoding='utf-8')
 
     if anyio is not None:
         async def load_async(
@@ -105,4 +106,5 @@ class CompanionFileLoader(AsyncTemplateLoader[str], SyncTemplateLoader[str]):
             # Pyright isn't correctly applying the anyio is not None, hence the
             # ignore
             module_dir = anyio.Path(module_file).parent  # type: ignore
-            return await (module_dir / template_resource_locator).read_text()
+            return await (module_dir / template_resource_locator).read_text(
+                encoding='utf-8')
