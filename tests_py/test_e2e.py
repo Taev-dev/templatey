@@ -359,3 +359,108 @@ class TestApiE2E:
             </body>
             </html>
             '''  # noqa: W293
+
+    def test_with_union(self):
+        """Basically the same as the second playtest, but this time with
+        a union of two different navigation classes.
+        """
+        nav1 = '''
+            <li>
+                <a href="foo.html" class="{var.classes}">{
+                    content.name}</a>
+            </li>'''
+        nav2 = '''
+            <li>
+                <a href="bar.html" class="{var.classes}">{
+                    content.name}</a>
+            </li>'''
+
+        page = '''
+            <html>
+            <head><title>{content.title}</title>
+            <body>
+            <header>
+            </header>
+
+            <nav>
+                <ol>
+                {slot.nav: classes='navbar'}
+                </ol>
+            </nav>
+
+            <h1>Dear {var.name}</h1>
+            <main>
+                {content.main}
+            </main>
+            <footer>
+            </footer>
+            </body>
+            </html>
+            '''
+
+        @template(html, 'nav1')
+        class NavTemplate1:
+            name: Content[str]
+            classes: Var[str]
+
+        @template(html, 'nav2')
+        class NavTemplate2:
+            name: Content[str]
+            classes: Var[str]
+
+        @template(html, 'page')
+        class PageTemplate:
+            name: Var[str]
+            nav: Slot[NavTemplate1 | NavTemplate2]
+            title: Content[str]
+            main: Content[str]
+
+        render_env = RenderEnvironment(
+            env_functions=(),
+            template_loader=DictTemplateLoader(
+                templates={
+                    'page': page,
+                    'nav1': nav1,
+                    'nav2': nav2}))
+
+        render_result = render_env.render_sync(
+            PageTemplate(
+                name='John Doe',
+                title='An example page',
+                main='With some content',
+                nav=[
+                    NavTemplate1(
+                        name='Home',
+                        classes=...),
+                    NavTemplate2(
+                        name='About us',
+                        classes=...)]))
+
+        assert render_result == '''
+            <html>
+            <head><title>An example page</title>
+            <body>
+            <header>
+            </header>
+
+            <nav>
+                <ol>
+                
+            <li>
+                <a href="foo.html" class="navbar">Home</a>
+            </li>
+            <li>
+                <a href="bar.html" class="navbar">About us</a>
+            </li>
+                </ol>
+            </nav>
+
+            <h1>Dear John Doe</h1>
+            <main>
+                With some content
+            </main>
+            <footer>
+            </footer>
+            </body>
+            </html>
+            '''  # noqa: W293

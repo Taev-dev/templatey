@@ -160,15 +160,15 @@ def render_driver(
                         parent_part_index=next_part.part_index))
 
             elif isinstance(next_part, InterpolatedSlot):
-                slot_class = render_node.signature.slots[next_part.name]
-                slot_xable = cast(type[TemplateIntersectable], slot_class)
                 provenance_counter = itertools.count()
                 render_stack.extend(reversed(tuple(
                     _RenderStackNode(
                         instance=slot_instance,
-                        parts=iter(context.template_preload[slot_class].parts),
-                        config=slot_xable._templatey_config,
-                        signature=slot_xable._templatey_signature,
+                        parts=iter(
+                            context.template_preload[
+                                type(slot_instance)].parts),
+                        config=slot_instance._templatey_config,
+                        signature=slot_instance._templatey_signature,
                         provenance=TemplateProvenance(
                             (*render_node.provenance, TemplateProvenanceNode(
                                 parent_slot_key=next_part.name,

@@ -8,6 +8,7 @@ import typing
 from collections import defaultdict
 from collections import deque
 from collections.abc import Callable
+from collections.abc import Collection
 from collections.abc import Iterable
 from collections.abc import Mapping
 from collections.abc import Sequence
@@ -17,6 +18,7 @@ from dataclasses import field
 from dataclasses import fields
 from textwrap import dedent
 from types import EllipsisType
+from types import UnionType
 from typing import Annotated
 from typing import Any
 from typing import ClassVar
@@ -336,7 +338,7 @@ class TemplateSignature:
     Not meant to be created directly; instead, you should use the
     TemplateSignature.new() convenience method.
     """
-    slots: dict[str, type[TemplateParamsInstance]]
+    slots: Mapping[str, type[TemplateParamsInstance] | UnionType]
     slot_names: frozenset[str]
     vars_: dict[str, type]
     var_names: frozenset[str]
@@ -351,7 +353,7 @@ class TemplateSignature:
     @classmethod
     def new(
             cls,
-            slots: dict[str, type[TemplateParamsInstance]],
+            slots: dict[str, type[TemplateParamsInstance] | UnionType],
             vars_: dict[str, type],
             content: dict[str, type]
             ) -> TemplateSignature:
@@ -366,19 +368,28 @@ class TemplateSignature:
         slot_tree_lookup = {}
         tree_wip: dict[type[TemplateParamsInstance], list[_SlotTreeRoute]]
         tree_wip = defaultdict(list)
-        for parent_slot_name, parent_slot_type in slots.items():
-            slot_xable = cast(type[TemplateIntersectable], parent_slot_type)
-            child_lookup = slot_xable._templatey_signature._slot_tree_lookup
-            for child_slot_type, child_slot_tree in child_lookup.items():
-                tree_wip[child_slot_type].append(
-                    (parent_slot_name, child_slot_tree))
+        for parent_slot_name, parent_slot_annotation in slots.items():
+            parent_slot_types: Collection[type[TemplateParamsInstance]]
+            if isinstance(parent_slot_annotation, UnionType):
+                parent_slot_types = parent_slot_annotation.__args__
+            else:
+                parent_slot_types = (parent_slot_annotation,)
 
-            # Note that the empty tuple here denotes that it doesn't have any
-            # children **for the current node.** That doesn't mean that the
-            # child tree doesn't have any other slots of the same type (hence
-            # using append), but we're mapping ALL of the nodes, and NOT just
-            # the leaves.
-            tree_wip[parent_slot_type].append((parent_slot_name, ()))
+            for parent_slot_type in parent_slot_types:
+                slot_xable = cast(
+                    type[TemplateIntersectable], parent_slot_type)
+                child_lookup = (
+                    slot_xable._templatey_signature._slot_tree_lookup)
+                for child_slot_type, child_slot_tree in child_lookup.items():
+                    tree_wip[child_slot_type].append(
+                        (parent_slot_name, child_slot_tree))
+
+                # Note that the empty tuple here denotes that it doesn't have
+                # any children **for the current node.** That doesn't mean that
+                # the child tree doesn't have any other slots of the same type
+                # (hence using append), but we're mapping ALL of the nodes, and
+                # NOT just the leaves.
+                tree_wip[parent_slot_type].append((parent_slot_name, ()))
 
         for slot_key, route_list in tree_wip.items():
             slot_tree_lookup[slot_key] = tuple(route_list)

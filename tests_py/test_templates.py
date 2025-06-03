@@ -164,6 +164,33 @@ class TestMakeTemplateDefinition:
         assert len(signature.slots) == 1
         assert 'foo' in signature.slots
 
+    def test_slot_extraction_with_union(self):
+        """Slots declared as the union of two templates must correctly
+        include both referenced child templates in the loaded parent.
+        """
+        @template(fake_template_config, object())
+        class Foo:
+            foo: Var[str]
+
+        @template(fake_template_config, object())
+        class Bar:
+            bar: Var[str]
+
+        class FakeTemplate:
+            foo: Slot[Foo | Bar]
+            bar: Var[str]
+            baz: Content[str]
+
+        retval = cast(TemplateIntersectable, make_template_definition(
+            FakeTemplate,
+            dataclass_kwargs={},
+            template_resource_locator=object(),
+            template_config=fake_template_config))
+        signature = retval._templatey_signature
+
+        assert len(signature.slots) == 1
+        assert 'foo' in signature.slots
+
     def test_var_extraction(self):
         """Fields declared with Var[...] must be correctly detected
         and stored on the class.
