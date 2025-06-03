@@ -31,6 +31,8 @@ try:
 except ImportError:
     from typing_extensions import TypeIs
 
+from docnote import ClcNote
+
 from templatey._annotations import InterfaceAnnotation
 from templatey._annotations import InterfaceAnnotationFlavor
 from templatey.interpolators import NamedInterpolator
@@ -175,9 +177,29 @@ def template[T: type](  # noqa: PLR0913
 
 @dataclass(frozen=True)
 class TemplateConfig[T: type, L: object]:
-    interpolator: NamedInterpolator
-    variable_escaper: VariableEscaper
-    content_verifier: ContentVerifier
+    interpolator: Annotated[
+        NamedInterpolator,
+        ClcNote(
+            '''The interpolator determines what characters are used for
+            performing interpolations within the template. They can be
+            escaped by repeating them, for example ``{{}}`` would be
+            a literal ``{}`` with a curly braces interpolator.
+            ''')]
+    variable_escaper: Annotated[
+        VariableEscaper,
+        ClcNote(
+            '''Variables are always escaped. The variable escaper is
+            the callable responsible for performing that escaping. If you
+            don't need escaping, there are noop escapers within the prebaked
+            template configs that you can use for convenience.
+            ''')]
+    content_verifier: Annotated[
+        ContentVerifier,
+        ClcNote(
+            '''Content isn't escaped, but it ^^is^^ verified. Content
+            verification is a simple process that either succeeds or fails;
+            it allows, for example, to allowlist certain HTML tags.
+            ''')]
 
 
 @dataclass(slots=True, frozen=True)

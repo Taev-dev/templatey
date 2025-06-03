@@ -82,11 +82,7 @@ html: Annotated[
         ''')
 ] = TemplateConfig(
     interpolator=NamedInterpolator.CURLY_BRACES,
-    # Variables must always be escaped. This is a callable that performs the
-    # escaping.
     variable_escaper=html_escaper,
-    # Content isn't escaped, but it can be allowlisted. So, for example, you
-    # could write a verifier that restricts HTML content to specific tags.
     content_verifier=html_verifier)
 
 
@@ -103,12 +99,27 @@ html_unicon: Annotated[
         ''')
 ] = TemplateConfig(
     interpolator=NamedInterpolator.UNICODE_CONTROL,
-    # Variables must always be escaped. This is a callable that performs the
-    # escaping.
     variable_escaper=html_escaper,
-    # Content isn't escaped, but it can be allowlisted. So, for example, you
-    # could write a verifier that restricts HTML content to specific tags.
     content_verifier=html_verifier)
+
+
+trusted: Annotated[
+    TemplateConfig,
+    ClcNote(
+        '''This prebaked template config uses curly brackets as the
+        interpolator, but includes **no escaping or verification**.
+
+        Use this:
+        ++  if, and **only if**, you trust all variables and content passed
+            to the template
+        ++  if you don't need to use curly braces within the template itself
+
+        One example use case would be using a template for plaintext.
+        ''')
+] = TemplateConfig(
+    interpolator=NamedInterpolator.CURLY_BRACES,
+    variable_escaper=noop_escaper,
+    content_verifier=noop_verifier)
 
 
 trusted_unicon: Annotated[
@@ -126,9 +137,5 @@ trusted_unicon: Annotated[
         ''')
 ] = TemplateConfig(
     interpolator=NamedInterpolator.UNICODE_CONTROL,
-    # Variables must always be escaped. This is a callable that performs the
-    # escaping.
     variable_escaper=noop_escaper,
-    # Content isn't escaped, but it can be allowlisted. So, for example, you
-    # could write a verifier that restricts HTML content to specific tags.
     content_verifier=noop_verifier)
