@@ -8,7 +8,7 @@ import pytest
 
 from templatey.environments import RenderEnvironment
 from templatey.interpolators import NamedInterpolator
-from templatey.prebaked.env_funcs import inject
+from templatey.prebaked.env_funcs import inject_templates
 from templatey.prebaked.loaders import DictTemplateLoader
 from templatey.prebaked.template_configs import html
 from templatey.prebaked.template_configs import html_escaper
@@ -290,7 +290,7 @@ class TestApiE2E:
 
             <nav>
                 <ol>
-                {@inject(content.nav)}
+                {@inject_templates(content.nav)}
                 </ol>
             </nav>
 
@@ -318,7 +318,7 @@ class TestApiE2E:
             main: Content[str]
 
         render_env = RenderEnvironment(
-            env_functions=(href, inject),
+            env_functions=(href, inject_templates),
             template_loader=DictTemplateLoader(
                 templates={
                     'page': page,

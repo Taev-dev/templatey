@@ -417,6 +417,7 @@ async-prebaked = [
 [package.dev-dependencies]
 lint = [
     { name = "ruff" },
+    { name = "typing-extensions" },
 ]
 repl = [
     { name = "ipython" },
@@ -439,7 +440,10 @@ requires-dist = [
 ]
 
 [package.metadata.requires-dev]
-lint = [{ name = "ruff", specifier = ">=0.3.3" }]
+lint = [
+    { name = "ruff", specifier = ">=0.3.3" },
+    { name = "typing-extensions", specifier = ">=4.12.2" },
+]
 repl = [
     { name = "ipython", specifier = ">=8.8.0" },
     { name = "wat-inspector", specifier = ">=0.3.2" },

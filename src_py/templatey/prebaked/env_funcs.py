@@ -54,9 +54,11 @@ def xml_attrify(
         return retval
 
 
-def inject[T: TemplateParamsInstance](template: T) -> tuple[T]:
+def inject_templates[T: TemplateParamsInstance](
+        *templates: T
+        ) -> tuple[T, ...]:
     """This is a very simple function to wrap a passed template instance
     into a tuple, allowing it to be used as an environment function.
     This is useful for dynamically injecting templates into parents.
     """
-    return (template,)
+    return tuple(templates)

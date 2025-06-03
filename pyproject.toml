@@ -28,6 +28,7 @@ test = [
 
 lint = [
     "ruff >= 0.3.3",
+    "typing_extensions>=4.12.2",
 ]
 
 repl = [
