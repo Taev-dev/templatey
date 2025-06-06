@@ -181,7 +181,7 @@ def render_driver(  # noqa: C901
                 render_stack.extend(reversed(tuple(
                     _RenderStackNode(
                         instance=slot_instance,
-                        parts=iter(
+                        parts=next_part.config.apply_affix_iter(
                             context.template_preload[
                                 type(slot_instance)].parts),
                         config=slot_instance._templatey_config,

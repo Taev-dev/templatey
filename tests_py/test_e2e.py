@@ -515,28 +515,61 @@ class TestApiE2E:
     def test_interp_config(self):
         """Interpolation config must handle affixes and format specs
         correctly.
+
+        This is covering the following scenarios:
+        ++  content has configured prefix, suffix, and fmt, and a value
+            is passed; all must be included.
+        ++  content has configured prefix, suffix, and fmt, but no
+            value is passed; all must be omitted.
+        ++  slot has configured prefix and suffix, and values are
+            passed; all must be included for each slot instance
+        ++  slot has configured prefix and suffix, but empty tuple is
+            passed; all must be omitted
         """
         test_html_config = TemplateConfig(
             interpolator=NamedInterpolator.CURLY_BRACES,
             variable_escaper=html_escaper,
             content_verifier=html_verifier)
 
+        slot_text = '{var.value}'
+
+        @template(html, 'slot_template')
+        class SlotTemplate:
+            value: Var[str]
+
         template_text = (
-            r'''{content.configged:
+            r'''{content.omitted:
+                __prefix__='^^',
+                __suffix__='$$',
+                __fmt__='~<5'
+            }{content.configged:
                 __prefix__="__",
                 __suffix__=";\n",
-                __fmt__='.<5'}''')
+                __fmt__='.<5'}{
+            slot.nested_1: __suffix__=';\n'}{
+            slot.nested_2: __prefix__='!!!!'}''')
 
         @template(test_html_config, 'test_template')
-        class TestTemplate:
+        class OuterTemplate:
             configged: Content[str | None]
+            omitted: Content[str | None]
+            nested_1: Slot[SlotTemplate]
+            nested_2: Slot[SlotTemplate]
 
         render_env = RenderEnvironment(
             env_functions=(),
             template_loader=DictTemplateLoader(
-                templates={'test_template': template_text}))
-        render_env.load_sync(TestTemplate)
+                templates={
+                    'test_template': template_text,
+                    'slot_template': slot_text}))
+        render_env.load_sync(OuterTemplate)
         render_result = render_env.render_sync(
-            TestTemplate(configged='foo'))
+            OuterTemplate(
+                configged='foo',
+                omitted=None,
+                nested_1=(
+                    SlotTemplate(value='bar'),
+                    SlotTemplate(value='rab')),
+                nested_2=()))
 
-        assert render_result == '__foo..;\n'
+        assert render_result == '__foo..;\nbar;\nrab;\n'

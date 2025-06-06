@@ -8,6 +8,8 @@ import string
 from collections import defaultdict
 from collections.abc import Collection
 from collections.abc import Generator
+from collections.abc import Iterable
+from collections.abc import Iterator
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
@@ -307,6 +309,20 @@ class InterpolationConfig:
     fmt: str | None = None
     prefix: str | None = None
     suffix: str | None = None
+
+    def apply_affix_iter[T](self, iterable: Iterable[T]) -> Iterator[T | str]:
+        """For the given iterable, inserts any defined prefix and/or
+        suffix before and after the passed iterable (respectively).
+        """
+        suffix = self.suffix
+        prefix = self.prefix
+        if prefix is not None:
+            yield prefix
+
+        yield from iterable
+
+        if suffix is not None:
+            yield suffix
 
     def apply_affix(self, val: str | None) -> tuple[str, ...]:
         """For the given val, inserts any defined prefix and/or suffix.
