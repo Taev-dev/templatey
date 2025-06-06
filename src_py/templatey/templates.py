@@ -38,7 +38,6 @@ from templatey._annotations import InterfaceAnnotation
 from templatey._annotations import InterfaceAnnotationFlavor
 from templatey.interpolators import NamedInterpolator
 from templatey.parser import InterpolatedFunctionCall
-from templatey.parser import InterpolatedVariable
 from templatey.parser import InterpolationConfig
 from templatey.parser import NestedContentReference
 from templatey.parser import NestedVariableReference
@@ -782,15 +781,12 @@ class _ComplexContentBase(Protocol):
         if needed, merge in the variable itself using an
         ``InjectedValue``, configuring it as appropriate.
 
-        **Note that the parent interpolation config will be applied to
+        **Note that the parent interpolation config will be ignored by
         all strings returned by flattening individually.** So if, for
         example, you included a prefix in the content interpolation
         within the template itself, and then passed a ``ComplexContent``
-        instance to the template instance, it would result in the prefix
-        being applied to every string literal returned by flatten, which
-        is almost certainly ^^not^^ what you want. Instead, you should
-        leave prefix/suffix empty at the interpolation level, and let
-        ``flatten`` handle any needed prefix/suffix on its own.
+        instance to the template instance, the prefix would be ignored
+        completely (unless you do something with it in ``flatten``).
 
         > Example: noun quantity
         __embed__: 'code/python'
