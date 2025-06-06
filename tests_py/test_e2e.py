@@ -511,3 +511,32 @@ class TestApiE2E:
         assert render_result == '''
             foooofbarrabbazhtmlzab&lt;p&gt;
             '''
+
+    def test_interp_config(self):
+        """Interpolation config must handle affixes and format specs
+        correctly.
+        """
+        test_html_config = TemplateConfig(
+            interpolator=NamedInterpolator.CURLY_BRACES,
+            variable_escaper=html_escaper,
+            content_verifier=html_verifier)
+
+        template_text = (
+            r'''{content.configged:
+                __prefix__="__",
+                __suffix__=";\n",
+                __fmt__='.<5'}''')
+
+        @template(test_html_config, 'test_template')
+        class TestTemplate:
+            configged: Content[str | None]
+
+        render_env = RenderEnvironment(
+            env_functions=(),
+            template_loader=DictTemplateLoader(
+                templates={'test_template': template_text}))
+        render_env.load_sync(TestTemplate)
+        render_result = render_env.render_sync(
+            TestTemplate(configged='foo'))
+
+        assert render_result == '__foo..;\n'

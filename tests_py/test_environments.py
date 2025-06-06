@@ -15,6 +15,7 @@ from templatey.parser import InterpolatedContent
 from templatey.parser import InterpolatedFunctionCall
 from templatey.parser import InterpolatedSlot
 from templatey.parser import InterpolatedVariable
+from templatey.parser import InterpolationConfig
 from templatey.parser import LiteralTemplateString
 from templatey.parser import ParsedTemplateResource
 from templatey.parser import parse
@@ -415,12 +416,12 @@ class TestRenderEnvironment:
                     InterpolatedVariable(
                         part_index=1,
                         name='foo',
-                        format_spec=None,
-                        conversion=None),
+                        config=InterpolationConfig()),
                     InterpolatedSlot(
                         part_index=2,
                         name='bar',
-                        params={})),
+                        params={},
+                        config=InterpolationConfig())),
                 variable_names=frozenset({'foo'}),
                 content_names=frozenset(),
                 slot_names=frozenset({'bar'}),
@@ -452,7 +453,9 @@ class TestRenderEnvironment:
                     parts=(
                         LiteralTemplateString('foobar', part_index=0),
                         InterpolatedContent(
-                            part_index=1, name='foo')),
+                            part_index=1,
+                            name='foo',
+                            config=InterpolationConfig())),
                     variable_names=frozenset(),
                     content_names=frozenset({'foo'}),
                     slot_names=frozenset(),

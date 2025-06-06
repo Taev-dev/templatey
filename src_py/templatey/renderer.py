@@ -25,6 +25,7 @@ from templatey.parser import InterpolatedContent
 from templatey.parser import InterpolatedFunctionCall
 from templatey.parser import InterpolatedSlot
 from templatey.parser import InterpolatedVariable
+from templatey.parser import InterpolationConfig
 from templatey.parser import NestedContentReference
 from templatey.parser import NestedVariableReference
 from templatey.parser import ParsedTemplateResource
@@ -78,7 +79,10 @@ class RenderEnvRequest:
     results_executed: dict[_PrecallCacheKey, FuncExecutionResult]
 
 
-def render_driver(
+# Yes, this is a larger function than it should be.
+# But function calls in python are slow, and we actually kinda care about
+# performance here.
+def render_driver(  # noqa: C901
         template_instance: TemplateParamsInstance,
         output: list[str],
         error_collector: list[Exception]
@@ -110,6 +114,11 @@ def render_driver(
             instance=template_instance))
 
     while render_stack:
+        # Quick note on the following code: you might think these isinstance
+        # calls are slow, and that you could speed things up by, say, using
+        # some kind of sentinel value in a slot. This is incorrect! (At least
+        # with 3.13). Isinstance is actually the fastest (and clearest) way
+        # to do it.
         try:
             render_node = render_stack[-1]
             next_part = next(render_node.parts)
@@ -126,12 +135,16 @@ def render_driver(
                     param_flavor=InterfaceAnnotationFlavor.VARIABLE,
                     error_collector=error_collector,
                     placeholder_on_error='')
-                unescaped_val = _apply_format(
-                    unescaped_vars[next_part.name],
-                    next_part.conversion,
-                    next_part.format_spec)
-                output.append(
-                    render_node.config.variable_escaper(unescaped_val))
+
+                raw_val = unescaped_vars[next_part.name]
+                if raw_val is not None:
+                    unescaped_val = _apply_format(
+                        raw_val,
+                        next_part.config)
+                    escaped_val = render_node.config.variable_escaper(
+                        unescaped_val)
+                    # Note that variable interpolations don't support affixes!
+                    output.append(escaped_val)
 
             elif isinstance(next_part, InterpolatedContent):
                 unverified_content = _ParamLookup(
@@ -142,11 +155,7 @@ def render_driver(
                     placeholder_on_error='')
                 val_from_params = unverified_content[next_part.name]
 
-                if isinstance(val_from_params, str):
-                    render_node.config.content_verifier(val_from_params)
-                    output.append(val_from_params)
-
-                else:
+                if isinstance(val_from_params, ComplexContent):
                     output.extend(_render_complex_content(
                         val_from_params,
                         _ParamLookup(
@@ -156,8 +165,16 @@ def render_driver(
                             error_collector=error_collector,
                             placeholder_on_error=''),
                         render_node.config,
-                        error_collector,
-                        parent_part_index=next_part.part_index))
+                        next_part.config,
+                        error_collector))
+
+                # As usual, values of None are omitted
+                elif val_from_params is not None:
+                    formatted_val = _apply_format(
+                        val_from_params,
+                        next_part.config)
+                    render_node.config.content_verifier(formatted_val)
+                    output.extend(next_part.config.apply_affix(formatted_val))
 
             elif isinstance(next_part, InterpolatedSlot):
                 provenance_counter = itertools.count()
@@ -374,43 +391,47 @@ def _get_precall_cache_key(
 
 
 def _render_complex_content(
-        complex_content: ComplexContent | object,
+        complex_content: ComplexContent,
         unescaped_vars: _ParamLookup,
         template_config: TemplateConfig,
+        interpolation_config: InterpolationConfig,
         error_collector: list[Exception],
-        *,
-        parent_part_index: int,
         ) -> Iterable[str]:
-    # Extra typecheck here because we're calling in to this potentially from
-    # an unverified context
-    if isinstance(complex_content, ComplexContent):
+    try:
+        extracted_vars = {
+            key: unescaped_vars[key] for key in complex_content.dependencies}
+
         for content_segment in complex_content.flatten(
-            unescaped_vars,
-            parent_part_index
+            extracted_vars, interpolation_config
         ):
-            if isinstance(content_segment, str):
-                template_config.content_verifier(content_segment)
-                yield content_segment
+            if isinstance(content_segment, InjectedValue):
+                raw_val = content_segment.value
+                if raw_val is None:
+                    continue
 
-            elif isinstance(content_segment, InterpolatedVariable):
-                unescaped_val = _apply_format(
-                    # Note that we've already checked this is defined in
-                    # _flatten_and_interpolate, so we don't need .get()
-                    unescaped_vars[content_segment.name],
-                    content_segment.conversion,
-                    content_segment.format_spec)
-                yield template_config.variable_escaper(unescaped_val)
+                unescaped_val = _apply_format(raw_val, content_segment.config)
 
-            else:
-                error_collector.append(_capture_traceback(TypeError(
-                    'ComplexContent.flatten() must always return strings '
-                    + 'or InterpolatedVariable instances!',
-                    content_segment)))
+                if content_segment.use_variable_escaper:
+                    escaped_val = template_config.variable_escaper(
+                        unescaped_val)
+                else:
+                    escaped_val = unescaped_val
 
-    else:
-        error_collector.append(_capture_traceback(TypeError(
-            'Interpolated content values must always be strings or '
-            + 'ComplexContent instances!', complex_content)))
+                if content_segment.use_content_verifier:
+                    template_config.content_verifier(escaped_val)
+
+                yield escaped_val
+
+            # Note: as usual, None values get omitted!
+            elif content_segment is not None:
+                formatted_val = _apply_format(
+                    content_segment, interpolation_config)
+                template_config.content_verifier(formatted_val)
+                yield formatted_val
+
+    except Exception as exc:
+        exc.add_note('Failed to render complex content!')
+        error_collector.append(exc)
 
 
 def _build_render_node_for_func_result(
@@ -774,32 +795,24 @@ def _(
     return unescaped_vars[param_value.name]
 
 
-def _apply_format(raw_value, conversion, format_spec) -> str:
+def _apply_format(raw_value, config: InterpolationConfig) -> str:
     """For both interpolated variables and injected values, we allow
     format specs and conversions to be supplied. We need to actually
     apply these, but the stdlib doesn't really give us a good way of
     doing that. So this is how we do that instead.
     """
     # hot path go fast
-    if conversion is None and format_spec is None:
+    if config is None or config.fmt is None:
+        # Note: yes, strings can be formatted with eg padding, but we literally
+        # just checked to make sure that there was no format spec, so format
+        # would have nothing to do here!
         if isinstance(raw_value, str):
             formatted_value = raw_value
         else:
             formatted_value = format(raw_value)
 
     else:
-        # format() expects an empty string, NOT None
-        format_spec = format_spec or ''
-        if conversion == 's':
-            to_format = str(raw_value)
-        elif conversion == 'r':
-            to_format = repr(raw_value)
-        elif conversion:
-            raise ValueError('Unknown formatting conversion!', conversion)
-        else:
-            to_format = raw_value
-
-        formatted_value = format(to_format, format_spec)
+        formatted_value = format(raw_value, config.fmt)
 
     return formatted_value
 
@@ -833,15 +846,15 @@ def _coerce_injected_value(
         template_config: TemplateConfig
         ) -> str:
     """InjectedValue instances are used within the return value of
-    environment functions to indicate that the result should be sourced
-    from the variables and/or the content of the current render call.
-    This function is responsible for converting the InjectedValue
-    instance into the final resulting string to render.
+    environment functions and complex content to indicate that the
+    result should be sourced from the variables and/or the content of
+    the current render call. This function is responsible for converting
+    the ``InjectedValue`` instance into the final resulting string to
+    render.
     """
     unescaped_value = _apply_format(
         injected_value.value,
-        injected_value.conversion,
-        injected_value.format_spec)
+        injected_value.config)
 
     if injected_value.use_variable_escaper:
         escapish_value = template_config.variable_escaper(unescaped_value)

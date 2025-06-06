@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import itertools
+import logging
 import re
 import string
 from collections import defaultdict
@@ -10,6 +11,7 @@ from collections.abc import Generator
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
+from dataclasses import fields
 from functools import singledispatch
 from typing import cast
 
@@ -23,6 +25,7 @@ _SLOT_MATCHER = re.compile(r'^\s*slot\.([A-z_][A-z0-9_]*)\s*$')
 _CONTENT_MATCHER = re.compile(r'^\s*content\.([A-z_][A-z0-9_]*)\s*$')
 _VAR_MATCHER = re.compile(r'^\s*var\.([A-z_][A-z0-9_]*)\s*$')
 _FUNC_MATCHER = re.compile(r'^\s*@([A-z_][A-z0-9_]*)\(([^\)]*)\)\s*$')
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,7 @@ class InterpolatedContent:
     # ComplexContent! Otherwise, strict mode in template/interface validation
     # will always fail with interpolated content.
     name: str
+    config: InterpolationConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,14 +80,26 @@ class InterpolatedSlot:
     part_index: int
     name: str
     params: dict[str, object]
+    config: InterpolationConfig
+
+    def __post_init__(self):
+        if self.config.fmt:
+            raise InvalidTemplateInterpolation(
+                'Template slots cannot have format specs!')
 
 
 @dataclass(frozen=True, slots=True)
 class InterpolatedVariable:
     part_index: int
     name: str
-    format_spec: str | None
-    conversion: str | None
+    config: InterpolationConfig
+
+    def __post_init__(self):
+        if self.config.prefix is not None or self.config.suffix is not None:
+            raise InvalidTemplateInterpolation(
+                'Template variables cannot have prefixes nor suffixes. If you '
+                + 'need similar behavior, you can create a dedicated '
+                + 'converter function to add the affix before escaping.')
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,99 +302,196 @@ def _wrap_formatter_parse(
                 field_name, format_spec, conversion, part_counter)
 
 
-def _coerce_interpolation(field_name, format_spec, conversion, part_counter):
-    if (match := _VAR_MATCHER.match(field_name)) is not None:
-        return InterpolatedVariable(
-            part_index=next(part_counter),
-            name=match.group(1),
-            format_spec=format_spec or None,
-            conversion=conversion or None)
+@dataclass(frozen=True, slots=True)
+class InterpolationConfig:
+    fmt: str | None = None
+    prefix: str | None = None
+    suffix: str | None = None
 
-    if conversion:
-        raise InvalidTemplateInterpolation(
-            'templatey only supports str conversions in var interpolations',
-            field_name, format_spec, conversion)
+    def apply_affix(self, val: str | None) -> tuple[str, ...]:
+        """For the given val, inserts any defined prefix and/or suffix.
+        If val is None, returns an empty tuple.
 
-    if (match := _SLOT_MATCHER.match(field_name)) is not None:
-        slot_params_str = format_spec.strip()
+        Note that tuples are faster for list.extend than both iterators
+        and lists, at least for these small sizes.
+        """
+        if val is None:
+            return ()
+
+        suffix = self.suffix
+        prefix = self.prefix
+        # Explicitly typing out the logic square here as a microoptimization
+        if prefix is None:
+            if suffix is None:
+                return (val,)
+            else:
+                return (val, suffix)
+        elif suffix is None:
+            return (prefix, val)
+        else:
+            return (prefix, val, suffix)
+
+    @classmethod
+    def from_format_spec(
+            cls,
+            format_spec: str | None
+            ) -> tuple[InterpolationConfig, dict[str, object]]:
+        if format_spec is None or not format_spec:
+            return (cls(), {})
+
+        # If you shift away from using AST-based parsing, then this trick is
+        # useful for converting raw strings to normal ones:
+        # codecs.decode(r'\n', 'unicode_escape') == '\n'
         try:
+            tree = ast.parse(f'print({format_spec})')
+        except (ValueError, SyntaxError) as exc:
+            raise InvalidTemplateInterpolation(
+                'Invalid interpolation parameters!'
+            ) from exc
+
+        injected_print = cast(ast.Call, cast(ast.Expr, tree.body[0]).value)
+
+        kwargs = {}
+        dunders = {}
+
+        if injected_print.args:
+            raise InvalidTemplateInterpolation(
+                'Everything after the : in a templatey interpolation must be '
+                + 'a keyword-only argument dict!')
+
+        for ast_kwarg in injected_print.keywords:
+            argname = ast_kwarg.arg
+            if argname is None:
+                raise InvalidTemplateInterpolation(
+                    'Additional arguments in templatey interpolations (ex '
+                    + 'explicit slot parameters) do not currently support '
+                    + 'star expansion (**kwargs)')
+
+            elif argname.startswith('__') and argname.endswith('__'):
+                dunder_name = argname[2:-2]
+
+                if dunder_name not in _interp_cfg_fields:
+                    logger.warning('Skipping unknown dunder field %s', argname)
+                    continue
+
+                # I think the following bit is reporting as unreachable because
+                # it doesn't think the singledispatch will match on anything,
+                # and therefore raise valueerror
+                dunder_value = _extract_reference_or_literal(ast_kwarg.value)
+
+                if not isinstance(dunder_value, str):
+                    raise InvalidTemplateInterpolation(
+                        'Non-string values for interpolation dunders are not '
+                        + 'currently supported!')
+
+                dunders[dunder_name] = dunder_value
+
+            else:
+                kwargs[ast_kwarg.arg] = _extract_reference_or_literal(
+                    ast_kwarg.value)
+
+        return (cls(**dunders), kwargs)
+
+
+# We use this for faster checks when parsing templates in from_format_spec
+_interp_cfg_fields = {field.name for field in fields(InterpolationConfig)}
+
+
+def _coerce_interpolation(field_name, format_spec, conversion, part_counter):
+    try:
+        if conversion:
+            raise InvalidTemplateInterpolation(
+                'Conversion specs are not supported in templatey; pass a '
+                + 'stringifier to the field definition instead.')
+
+        # The format spec is determined by the first : in the interpolation.
+        # Any following :s are included as part of it. However, for function
+        # calls, we want to interpret the format spec : as literally part of
+        # the field_name, so we join them back up.
+        if format_spec:
+            full_interpolation_def = f'{field_name}:{format_spec}'
+        else:
+            full_interpolation_def = field_name
+
+        if (match := _FUNC_MATCHER.match(full_interpolation_def)) is not None:
+            args, starargs, kwargs, starkwargs = _extract_call_signature(
+                match.group(2))
+            return InterpolatedFunctionCall(
+                part_index=next(part_counter),
+                name=match.group(1),
+                call_args=args,
+                call_args_exp=starargs,
+                call_kwargs=kwargs,
+                call_kwargs_exp=starkwargs,)
+
+        interp_cfg, kwargs = InterpolationConfig.from_format_spec(format_spec)
+        if (match := _SLOT_MATCHER.match(field_name)) is not None:
+            slot_params_str = format_spec.strip()
             args, starargs, kwargs, starkwargs = _extract_call_signature(
                 slot_params_str)
 
-            if args or starargs or starkwargs:
-                raise ValueError(
-                    'Slot parameters are keyword-only and do not support arg '
-                    + 'expansion!')
+            return InterpolatedSlot(
+                part_index=next(part_counter),
+                name=match.group(1),
+                params=kwargs,
+                config=interp_cfg)
 
-        except (ValueError, SyntaxError) as exc:
-            raise InvalidTemplateInterpolation(
-                'Invalid slot parameters!',
-                field_name, format_spec, conversion) from exc
+        else:
+            if kwargs:
+                raise InvalidTemplateInterpolation(
+                    'Interpolated variables and content cannot have arbitrary '
+                    + 'kwargs, only dunders!')
 
-        return InterpolatedSlot(
-            part_index=next(part_counter),
-            name=match.group(1),
-            params=kwargs)
+            if (match := _VAR_MATCHER.match(field_name)) is not None:
+                return InterpolatedVariable(
+                    part_index=next(part_counter),
+                    name=match.group(1),
+                    config=interp_cfg)
 
-    # The format spec is determined by the first : in the interpolation. Any
-    # following :s are included as part of it. However, in the rest of these,
-    # we want to interpret the format spec : as literally part of the
-    # field_name, so we join them back up.
-    if format_spec:
-        full_interpolation_def = f'{field_name}:{format_spec}'
-    else:
-        full_interpolation_def = field_name
+            elif (match := _CONTENT_MATCHER.match(field_name)) is not None:
+                return InterpolatedContent(
+                    part_index=next(part_counter),
+                    name=match.group(1),
+                    config=interp_cfg)
 
-    if (match := _CONTENT_MATCHER.match(full_interpolation_def)) is not None:
-        return InterpolatedContent(
-            part_index=next(part_counter),
-            name=match.group(1))
+        raise InvalidTemplateInterpolation(
+            'Unknown target for templatey interpolation (must be var, slot, '
+            + 'env function, or content)')
 
-    if (match := _FUNC_MATCHER.match(full_interpolation_def)) is not None:
-        try:
-            args, starargs, kwargs, starkwargs = _extract_call_signature(
-                match.group(2))
-        except (ValueError, SyntaxError) as exc:
-            raise InvalidTemplateInterpolation(
-                'Invalid asset function call signature',
-                field_name, format_spec, conversion) from exc
-        return InterpolatedFunctionCall(
-            part_index=next(part_counter),
-            name=match.group(1),
-            call_args=args,
-            call_args_exp=starargs,
-            call_kwargs=kwargs,
-            call_kwargs_exp=starkwargs,)
-
-    raise InvalidTemplateInterpolation(
-        'Unknown target for templatey interpolation',
-        field_name, format_spec, conversion)
+    except InvalidTemplateInterpolation as exc:
+        exc.add_note(f'{field_name=}, {format_spec=}, {conversion=}')
+        raise exc
 
 
 def _extract_call_signature(str_signature):
     """Returns *args and **kwargs for the desired asset function."""
-    tree = ast.parse(f'print({str_signature})')
-    injected_print = cast(ast.Call, cast(ast.Expr, tree.body[0]).value)
+    try:
+        tree = ast.parse(f'print({str_signature})')
+        injected_print = cast(ast.Call, cast(ast.Expr, tree.body[0]).value)
 
-    args = []
-    starargs = None
-    kwargs = {}
-    starkwargs = None
+        args = []
+        starargs = None
+        kwargs = {}
+        starkwargs = None
 
-    for ast_arg in injected_print.args:
-        if isinstance(ast_arg, ast.Starred):
-            starargs = _extract_reference_or_literal(ast_arg.value)
-        else:
-            args.append(_extract_reference_or_literal(ast_arg))
+        for ast_arg in injected_print.args:
+            if isinstance(ast_arg, ast.Starred):
+                starargs = _extract_reference_or_literal(ast_arg.value)
+            else:
+                args.append(_extract_reference_or_literal(ast_arg))
 
-    for ast_kwarg in injected_print.keywords:
-        if ast_kwarg.arg is None:
-            starkwargs = _extract_reference_or_literal(ast_kwarg.value)
-        else:
-            kwargs[ast_kwarg.arg] = _extract_reference_or_literal(
-                ast_kwarg.value)
+        for ast_kwarg in injected_print.keywords:
+            if ast_kwarg.arg is None:
+                starkwargs = _extract_reference_or_literal(ast_kwarg.value)
+            else:
+                kwargs[ast_kwarg.arg] = _extract_reference_or_literal(
+                    ast_kwarg.value)
 
-    return args, starargs, kwargs, starkwargs
+        return args, starargs, kwargs, starkwargs
+
+    except (ValueError, SyntaxError) as exc:
+        raise InvalidTemplateInterpolation(
+            'Invalid environment function call signature') from exc
 
 
 @singledispatch

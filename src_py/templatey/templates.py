@@ -26,7 +26,6 @@ from typing import Literal
 from typing import Protocol
 from typing import cast
 from typing import dataclass_transform
-from typing import runtime_checkable
 
 try:
     from typing import TypeIs  # type: ignore
@@ -40,6 +39,7 @@ from templatey._annotations import InterfaceAnnotationFlavor
 from templatey.interpolators import NamedInterpolator
 from templatey.parser import InterpolatedFunctionCall
 from templatey.parser import InterpolatedVariable
+from templatey.parser import InterpolationConfig
 from templatey.parser import NestedContentReference
 from templatey.parser import NestedVariableReference
 from templatey.parser import ParsedTemplateResource
@@ -729,23 +729,115 @@ def _classify_interface_field_flavor(
         return None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class InjectedValue:
-    """This is used by environment functions to indicate that a value is
-    being injected into the template by the function. It can indicate
-    whether verification, escaping, or both should be applied to the
-    value after conversion to a string.
+    """This is used by environment functions and complex content to
+    indicate that a value is being injected into the template. Use it
+    instead of a bare string to preserve an existing interpolation
+    config, or to indicate whether verification and/or escaping should
+    be applied to the value after conversion to a string.
+
+    Note that, if both are defined, the variable escaper will be called
+    first, before the content verifier.
     """
     value: object
-    format_spec: str | None
-    conversion: str | None
 
+    config: InterpolationConfig = field(default_factory=InterpolationConfig)
     use_content_verifier: bool = False
     use_variable_escaper: bool = True
 
+    def __post_init__(self):
+        if self.config.prefix is not None or self.config.suffix is not None:
+            raise ValueError(
+                'Injected values cannot have prefixes nor suffixes. If you '
+                + 'need similar behavior, simply add the affix(es) to the '
+                + 'iterable returned by the complex content or env function.')
 
-@runtime_checkable
-class ComplexContent(Protocol):
+
+class _ComplexContentBase(Protocol):
+
+    def flatten(
+            self,
+            dependencies: Annotated[
+                Mapping[str, object],
+                ClcNote(
+                    '''The values of the variables declared as dependencies
+                    in the constructor are passed to the call to ``flatten``
+                    during rendering.
+                    ''')],
+            config: Annotated[
+                InterpolationConfig,
+                ClcNote(
+                    '''The interpolation configuration of the content
+                    interpolation that the complex content is a member
+                    of. Note that neither prefix nor suffix can be passed
+                    on to an ``InjectedValue``; they must be manually included
+                    in the return value if desired.
+                    ''')],
+            ) -> Iterable[object | InjectedValue]:
+        """Implement this for any instance of complex content.
+
+        First, do whatever content modification you need to, based on
+        the dependency variables declared in the constructor. Then,
+        if needed, merge in the variable itself using an
+        ``InjectedValue``, configuring it as appropriate.
+
+        **Note that the parent interpolation config will be applied to
+        all strings returned by flattening individually.** So if, for
+        example, you included a prefix in the content interpolation
+        within the template itself, and then passed a ``ComplexContent``
+        instance to the template instance, it would result in the prefix
+        being applied to every string literal returned by flatten, which
+        is almost certainly ^^not^^ what you want. Instead, you should
+        leave prefix/suffix empty at the interpolation level, and let
+        ``flatten`` handle any needed prefix/suffix on its own.
+
+        > Example: noun quantity
+        __embed__: 'code/python'
+            class NaivePluralContent(ComplexContent):
+
+                def flatten(
+                        self,
+                        dependencies: Mapping[str, object],
+                        config: InterpolationConfig
+                        ) -> Iterable[str | InjectedValue]:
+                    \"""Pluralizes the name of the provided dependency.
+                    For example, ``{'widget': 1}`` will be rendered as
+                    "1 widget", but ``{'widget': 2}`` will be rendered as
+                    "2 widgets".
+                    \"""
+
+                    # Assume only 1 dependency
+                    name, value = next(iter(dependencies.items()))
+
+                    if 0 <= value <= 1:
+                        return (
+                            InjectedValue(
+                                value,
+                                # This assumes no prefix/suffix
+                                config=config,
+                                use_content_verifier=False,
+                                use_variable_escaper=True),
+                            ' ',
+                            name)
+
+                    else:
+                        return (
+                            InjectedValue(
+                                value,
+                                # This assumes no prefix/suffix
+                                config=config,
+                                use_content_verifier=False,
+                                use_variable_escaper=True),
+                            ' ',
+                            name,
+                            's')
+        """
+        ...
+
+
+@dataclass(slots=True, kw_only=True)
+class ComplexContent(_ComplexContentBase):
     """Sometimes content isn't as simple as a ``string``. For example,
     content might include variable interpolations. Or you might need
     to modify the content slightly based on the variables -- for
@@ -754,18 +846,12 @@ class ComplexContent(Protocol):
     you an escape hatch to do this: simply pass a ComplexContent
     instance as a value instead of a string.
     """
-    TEMPLATEY_CONTENT: ClassVar[Literal[True]] = True
 
-    def flatten(
-            self,
-            unescaped_vars_context: Mapping[str, object],
-            parent_part_index: int,
-            ) -> Iterable[str | InterpolatedVariable]:
-        """Implement this for any instance of complex content. **Note
-        that you should never perform the variable interpolation
-        yourself.** Instead, you should do whatever content modification
-        you need based on the variables, yielding back an
-        InterpolatedVariable placeholder in place of the value. This
-        lets templatey manage variable escaping, etc.
-        """
-        ...
+    dependencies: Annotated[
+        Collection[str],
+        ClcNote(
+            '''Complex content dependencies are the **variable** names
+            that a piece of complex content depends on. These will be
+            passed to the implemented ``flatten`` function during
+            rendering.
+            ''')]

@@ -8,6 +8,7 @@ import pytest
 from templatey.interpolators import NamedInterpolator
 from templatey.parser import InterpolatedFunctionCall
 from templatey.parser import InterpolatedVariable
+from templatey.parser import InterpolationConfig
 from templatey.parser import LiteralTemplateString
 from templatey.parser import NestedContentReference
 from templatey.parser import NestedVariableReference
@@ -174,13 +175,11 @@ class TestRenderDriver:
                         InterpolatedVariable(
                             part_index=3,
                             name='var1',
-                            format_spec=None,
-                            conversion=None),
+                            config=InterpolationConfig()),
                         InterpolatedVariable(
                             part_index=4,
                             name='var1',
-                            format_spec=None,
-                            conversion=None),),
+                            config=InterpolationConfig()),),
                     variable_names=frozenset({'var1'}),
                     content_names=frozenset(),
                     slot_names=frozenset(),
@@ -277,8 +276,7 @@ class TestRenderContext:
                         InterpolatedVariable(
                             part_index=0,
                             name='var1',
-                            format_spec=None,
-                            conversion=None),
+                            config=InterpolationConfig()),
                         LiteralTemplateString('baz', part_index=1),
                         fake_interpolated_call),
                     variable_names=frozenset({'var1'}),
@@ -431,21 +429,19 @@ class TestRecursivelyCoerceFuncExecutionParams:
 
 
 _testdata_apply_format = [
-    ('foo', None, None, 'foo'),
-    (1, None, None, '1'),
-    (Decimal(1), None, None, '1'),
-    (Decimal(1), 'r', None, "Decimal('1')"),
-    (1, None, '02d', "01"),
-    (Decimal(1), 'r', '_<14', "Decimal('1')__"),
+    ('foo', None, 'foo'),
+    (1, None, '1'),
+    (Decimal(1), None, '1'),
+    (1, InterpolationConfig(fmt='02d'), "01"),
+    ('foo', InterpolationConfig(fmt='_<14'), "foo___________"),
 ]
 
 
 class TestApplyFormat:
 
-    @pytest.mark.parametrize(
-        'raw,conversion,fmt_spec,expected', _testdata_apply_format)
-    def test_nones(self, raw, conversion, fmt_spec, expected):
-        rv = _apply_format(raw, conversion, fmt_spec)
+    @pytest.mark.parametrize('raw,config,expected', _testdata_apply_format)
+    def test_nones(self, raw, config, expected):
+        rv = _apply_format(raw, config)
         assert rv == expected
 
 
@@ -480,7 +476,7 @@ class TestCaptureTraceback:
 @patch(
     'templatey.renderer._apply_format',
     autospec=True,
-    wraps=lambda raw_value, conversion, format_spec: raw_value)
+    wraps=lambda raw_value, *_, **__: raw_value)
 class TestCoerceInjectedValue:
 
     def test_escaped(self, apply_format_mock, new_fake_template_config):
@@ -490,8 +486,6 @@ class TestCoerceInjectedValue:
         retval = _coerce_injected_value(
             InjectedValue(
                 value='foo',
-                format_spec=None,
-                conversion=None,
                 use_variable_escaper=True,
                 use_content_verifier=False),
             new_fake_template_config)
@@ -508,8 +502,7 @@ class TestCoerceInjectedValue:
         retval = _coerce_injected_value(
             InjectedValue(
                 value='foo',
-                format_spec=None,
-                conversion=None,
+                config=InterpolationConfig(),
                 use_variable_escaper=False,
                 use_content_verifier=True),
             new_fake_template_config)
@@ -527,8 +520,7 @@ class TestCoerceInjectedValue:
         retval = _coerce_injected_value(
             InjectedValue(
                 value='foo',
-                format_spec=None,
-                conversion=None,
+                config=InterpolationConfig(),
                 use_variable_escaper=True,
                 use_content_verifier=True),
             new_fake_template_config)
@@ -544,8 +536,7 @@ class TestCoerceInjectedValue:
         retval = _coerce_injected_value(
             InjectedValue(
                 value='foo',
-                format_spec=None,
-                conversion=None,
+                config=InterpolationConfig(),
                 use_variable_escaper=False,
                 use_content_verifier=False),
             new_fake_template_config)
