@@ -263,7 +263,6 @@ class TestParse:
 
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
-        print(parsed.parts[1])
         assert InterpolatedFunctionCall(
             call_args_exp=None,
             call_kwargs_exp=NestedVariableReference(name='baz'),

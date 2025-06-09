@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import partial
 from functools import singledispatch
+from typing import NamedTuple
 from typing import cast
 from typing import overload
 
@@ -82,7 +83,7 @@ class RenderEnvRequest:
 # Yes, this is a larger function than it should be.
 # But function calls in python are slow, and we actually kinda care about
 # performance here.
-def render_driver(  # noqa: C901
+def render_driver(  # noqa: C901, PLR0912, PLR0915
         template_instance: TemplateParamsInstance,
         output: list[str],
         error_collector: list[Exception]
@@ -111,7 +112,8 @@ def render_driver(  # noqa: C901
                     parent_slot_index=-1,
                     instance_id=id(template_instance),
                     instance=template_instance),)),
-            instance=template_instance))
+            instance=template_instance,
+            prerenderers=template_xable._templatey_prerenderers))
 
     while render_stack:
         # Quick note on the following code: you might think these isinstance
@@ -137,9 +139,16 @@ def render_driver(  # noqa: C901
                     placeholder_on_error='')
 
                 raw_val = unescaped_vars[next_part.name]
-                if raw_val is not None:
+                prerenderer = getattr(
+                    render_node.prerenderers, next_part.name, None)
+                if prerenderer is None:
+                    prerender = raw_val
+                else:
+                    prerender = cast(str | None, prerenderer(raw_val))
+
+                if prerender is not None:
                     unescaped_val = _apply_format(
-                        raw_val,
+                        prerender,
                         next_part.config)
                     escaped_val = render_node.config.variable_escaper(
                         unescaped_val)
@@ -166,15 +175,26 @@ def render_driver(  # noqa: C901
                             placeholder_on_error=''),
                         render_node.config,
                         next_part.config,
+                        render_node.prerenderers,
                         error_collector))
 
-                # As usual, values of None are omitted
-                elif val_from_params is not None:
-                    formatted_val = _apply_format(
-                        val_from_params,
-                        next_part.config)
-                    render_node.config.content_verifier(formatted_val)
-                    output.extend(next_part.config.apply_affix(formatted_val))
+                else:
+                    prerenderer = getattr(
+                        render_node.prerenderers, next_part.name, None)
+                    if prerenderer is None:
+                        prerender = val_from_params
+                    else:
+                        prerender = cast(
+                            str | None, prerenderer(val_from_params))
+
+                    # As usual, values of None are omitted
+                    if prerender is not None:
+                        formatted_val = _apply_format(
+                            prerender,
+                            next_part.config)
+                        render_node.config.content_verifier(formatted_val)
+                        output.extend(
+                            next_part.config.apply_affix(formatted_val))
 
             elif isinstance(next_part, InterpolatedSlot):
                 provenance_counter = itertools.count()
@@ -191,7 +211,8 @@ def render_driver(  # noqa: C901
                                 parent_slot_key=next_part.name,
                                 parent_slot_index=next(provenance_counter),
                                 instance_id=id(slot_instance),
-                                instance=slot_instance))))
+                                instance=slot_instance))),
+                        prerenderers=slot_instance._templatey_prerenderers)
                     for slot_instance
                     in getattr(render_node.instance, next_part.name))))
 
@@ -230,6 +251,7 @@ class _RenderStackNode:
     config: TemplateConfig
     signature: TemplateSignature
     provenance: TemplateProvenance
+    prerenderers: NamedTuple
 
 
 @dataclass(slots=True)
@@ -395,14 +417,18 @@ def _render_complex_content(
         unescaped_vars: _ParamLookup,
         template_config: TemplateConfig,
         interpolation_config: InterpolationConfig,
+        prerenderers: NamedTuple,
         error_collector: list[Exception],
         ) -> Iterable[str]:
     try:
         extracted_vars = {
             key: unescaped_vars[key] for key in complex_content.dependencies}
+        extracted_prerenderers = {
+            key: getattr(prerenderers, key, None)
+            for key in complex_content.dependencies}
 
         for content_segment in complex_content.flatten(
-            extracted_vars, interpolation_config
+            extracted_vars, interpolation_config, extracted_prerenderers
         ):
             if isinstance(content_segment, InjectedValue):
                 raw_val = content_segment.value
@@ -492,7 +518,8 @@ def _build_render_node_for_func_result(
                 config=EMPTY_TEMPLATE_XABLE._templatey_config,
                 signature=EMPTY_TEMPLATE_XABLE._templatey_signature,
                 provenance=TemplateProvenance(),
-                instance=EMPTY_TEMPLATE_INSTANCE)]
+                instance=EMPTY_TEMPLATE_INSTANCE,
+                prerenderers=EMPTY_TEMPLATE_XABLE._templatey_prerenderers)]
 
     return ()
 
@@ -522,7 +549,8 @@ def _build_render_stack_extension(
                     config=EMPTY_TEMPLATE_XABLE._templatey_config,
                     signature=EMPTY_TEMPLATE_XABLE._templatey_signature,
                     provenance=TemplateProvenance(),
-                    instance=EMPTY_TEMPLATE_INSTANCE))
+                    instance=EMPTY_TEMPLATE_INSTANCE,
+                    prerenderers=EMPTY_TEMPLATE_XABLE._templatey_prerenderers))
                 # Make sure to create a new one so we don't screw up our iter()
                 current_node_parts = []
 
@@ -539,7 +567,8 @@ def _build_render_stack_extension(
                             parent_slot_index=-1,
                             instance_id=id(func_result_part),
                             instance=func_result_part),)),
-                    instance=func_result_part))
+                    instance=func_result_part,
+                    prerenderers=template_xable._templatey_prerenderers))
 
     # We have to do this one last time in case there were any trailing strings
     # after the last nested template instance
@@ -549,7 +578,8 @@ def _build_render_stack_extension(
             config=EMPTY_TEMPLATE_XABLE._templatey_config,
             signature=EMPTY_TEMPLATE_XABLE._templatey_signature,
             provenance=TemplateProvenance(),
-            instance=EMPTY_TEMPLATE_INSTANCE))
+            instance=EMPTY_TEMPLATE_INSTANCE,
+            prerenderers=EMPTY_TEMPLATE_XABLE._templatey_prerenderers))
     # Rationale: the nodes are currently in order of first encountered to
     # last encountered, which is the opposite of a stack. By simply reversing
     # them, we can then just extend them onto the existing render stack, easy

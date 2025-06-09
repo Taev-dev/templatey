@@ -4,14 +4,17 @@ import functools
 import inspect
 import itertools
 import logging
+import sys
 import typing
 from collections import defaultdict
 from collections import deque
+from collections import namedtuple
 from collections.abc import Callable
 from collections.abc import Collection
 from collections.abc import Iterable
 from collections.abc import Mapping
 from collections.abc import Sequence
+from dataclasses import _MISSING_TYPE
 from dataclasses import Field
 from dataclasses import dataclass
 from dataclasses import field
@@ -23,9 +26,11 @@ from typing import Annotated
 from typing import Any
 from typing import ClassVar
 from typing import Literal
+from typing import NamedTuple
 from typing import Protocol
 from typing import cast
 from typing import dataclass_transform
+from typing import overload
 
 try:
     from typing import TypeIs  # type: ignore
@@ -82,6 +87,10 @@ class TemplateIntersectable(Protocol):
     # classvars
     _templatey_resource_locator: ClassVar[object]
     _templatey_signature: ClassVar[TemplateSignature]
+    # Oldschool here for performance reasons; otherwise this would be a dict.
+    # Field names match the field names from the params; the value is gathered
+    # from the metadata value on the field.
+    _templatey_prerenderers: ClassVar[NamedTuple]
 
 
 def is_template_class(cls: type) -> TypeIs[type[TemplateIntersectable]]:
@@ -139,7 +148,138 @@ class ContentVerifier(Protocol):
         ...
 
 
-@dataclass_transform()
+class InterpolationPrerenderer(Protocol):
+
+    def __call__(
+            self,
+            value: Annotated[
+                object | None,
+                ClcNote(
+                    '''The value of the variable or content. A value of
+                    ``None`` indicates that the value is intended to be
+                    omitted, but you may still provide a fallback
+                    instead.
+                    ''')]
+            ) -> str | None:
+        """Interpolation prerenderers give you a chance to modify the
+        rendered result of a particular content or variable value, omit
+        it entirely, or provide a fallback for missing values.
+
+        Prerenderers are applied before formatting, escaping, and
+        verification, and the result of the prerenderer is used to
+        determine whether or not the value should be included in the
+        result. If your prerenderer returns ``None``, the parameter will
+        be completely omitted (including any prefix or suffix).
+        """
+        ...
+
+
+# The following is adapted directly from typeshed. We did some formatting
+# updates, and inserted our prerenderer param.
+if sys.version_info >= (3, 14):
+    @overload
+    def param[_T](
+            *,
+            default: _T,
+            default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
+            init: bool = True,
+            repr: bool = True,
+            hash: bool | None = None,
+            compare: bool = True,
+            metadata: Mapping[Any, Any] | None = None,
+            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
+            doc: str | None = None,
+            prerenderer: InterpolationPrerenderer | None = None,
+            ) -> _T: ...
+    @overload
+    def param[_T](
+            *,
+            default: Literal[_MISSING_TYPE.MISSING] = ...,
+            default_factory: Callable[[], _T],
+            init: bool = True,
+            repr: bool = True,
+            hash: bool | None = None,
+            compare: bool = True,
+            metadata: Mapping[Any, Any] | None = None,
+            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
+            doc: str | None = None,
+            prerenderer: InterpolationPrerenderer | None = None,
+            ) -> _T: ...
+    @overload
+    def param[_T](
+            *,
+            default: Literal[_MISSING_TYPE.MISSING] = ...,
+            default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
+            init: bool = True,
+            repr: bool = True,
+            hash: bool | None = None,
+            compare: bool = True,
+            metadata: Mapping[Any, Any] | None = None,
+            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
+            doc: str | None = None,
+            prerenderer: InterpolationPrerenderer | None = None,
+            ) -> Any: ...
+
+# Technically 3.10 or better, but we require that anyways
+else:
+    @overload
+    def param[_T](
+            *,
+            default: _T,
+            default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
+            init: bool = True,
+            repr: bool = True,
+            hash: bool | None = None,
+            compare: bool = True,
+            metadata: Mapping[Any, Any] | None = None,
+            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
+            prerenderer: InterpolationPrerenderer | None = None,
+            ) -> _T: ...
+    @overload
+    def param[_T](
+            *,
+            default: Literal[_MISSING_TYPE.MISSING] = ...,
+            default_factory: Callable[[], _T],
+            init: bool = True,
+            repr: bool = True,
+            hash: bool | None = None,
+            compare: bool = True,
+            metadata: Mapping[Any, Any] | None = None,
+            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
+            prerenderer: InterpolationPrerenderer | None = None,
+            ) -> _T: ...
+    @overload
+    def param[_T](
+            *,
+            default: Literal[_MISSING_TYPE.MISSING] = ...,
+            default_factory: Literal[_MISSING_TYPE.MISSING] = ...,
+            init: bool = True,
+            repr: bool = True,
+            hash: bool | None = None,
+            compare: bool = True,
+            metadata: Mapping[Any, Any] | None = None,
+            kw_only: bool | Literal[_MISSING_TYPE.MISSING] = ...,
+            prerenderer: InterpolationPrerenderer | None = None,
+            ) -> Any: ...
+
+
+def param(
+        *,
+        prerenderer: InterpolationPrerenderer | None = None,
+        metadata: Mapping[Any, Any] | None = None,
+        **field_kwargs):
+    if metadata is None:
+        metadata = {'templatey.prerenderer': prerenderer}
+
+    else:
+        metadata = {
+            **metadata,
+            'templatey.prerenderer': prerenderer}
+
+    return field(**field_kwargs, metadata=metadata)
+
+
+@dataclass_transform(field_specifiers=(param, field, Field))
 def template[T: type](  # noqa: PLR0913
         config: TemplateConfig,
         template_resource_locator: object,
@@ -152,11 +292,18 @@ def template[T: type](  # noqa: PLR0913
         frozen: bool = False,
         match_args: bool = True,
         kw_only: bool = False,
-        slots: bool = False,
+        slots: bool = True,
         weakref_slot: bool = False
         ) -> Callable[[T], T]:
-    """This both transforms the decorated class into a dataclass, and
-    declares it as a templatey template.
+    """This both transforms the decorated class into a stdlib dataclass
+    and declares it as a templatey template.
+
+    **Note that unlike the stdlib dataclass decorator, this defaults to
+    ``slots=True``.** If you find yourself having problems with
+    metaclasses and/or subclassing, you can disable this by passing
+    ``slots=False``. Generally speaking, though, this provides a
+    free performance benefit. **If weakref support is required, be sure
+    to pass ``weakref_slot=True``.
     """
     return functools.partial(
         make_template_definition,
@@ -590,7 +737,7 @@ class TemplateSignature:
         return invocations
 
 
-@dataclass_transform()
+@dataclass_transform(field_specifiers=(param, field, Field))
 def make_template_definition[T: type](
         cls: T,
         *,
@@ -648,6 +795,7 @@ def make_template_definition[T: type](
     slots = {}
     vars_ = {}
     content = {}
+    prerenderers = {}
     for template_field in fields(cls):
         field_classification = _classify_interface_field_flavor(
             template_type_hints, template_field)
@@ -675,11 +823,15 @@ def make_template_definition[T: type](
                 dest_lookup = content
 
             dest_lookup[template_field.name] = wrapped_type
+            prerenderers[template_field.name] = template_field.metadata.get(
+                'templatey.prerenderer')
 
     cls._templatey_signature = TemplateSignature.new(
         slots=slots,
         vars_=vars_,
         content=content)
+    converter_cls = namedtuple('TemplateyConverters', tuple(prerenderers))
+    cls._templatey_prerenderers = converter_cls(**prerenderers)
     return cls
 
 
@@ -773,6 +925,13 @@ class _ComplexContentBase(Protocol):
                     on to an ``InjectedValue``; they must be manually included
                     in the return value if desired.
                     ''')],
+            prerenderers: Annotated[
+                Mapping[str, InterpolationPrerenderer | None],
+                ClcNote(
+                    '''If a prerenderer is defined on a dependency variable,
+                    it will be included here; otherwise, the value will be
+                    set to ``None``.
+                    ''')],
             ) -> Iterable[object | InjectedValue]:
         """Implement this for any instance of complex content.
 
@@ -788,6 +947,11 @@ class _ComplexContentBase(Protocol):
         instance to the template instance, the prefix would be ignored
         completely (unless you do something with it in ``flatten``).
 
+        **Also note that you are responsible for calling the dependency
+        variable's ``InterpolationPrerenderer``. directly,** within your
+        implementation of ``flatten``. This affords you the option to
+        skip it if desired.
+
         > Example: noun quantity
         __embed__: 'code/python'
             class NaivePluralContent(ComplexContent):
@@ -795,7 +959,9 @@ class _ComplexContentBase(Protocol):
                 def flatten(
                         self,
                         dependencies: Mapping[str, object],
-                        config: InterpolationConfig
+                        config: InterpolationConfig,
+                        prerenderers:
+                            Mapping[str, InterpolationPrerenderer | None],
                         ) -> Iterable[str | InjectedValue]:
                     \"""Pluralizes the name of the provided dependency.
                     For example, ``{'widget': 1}`` will be rendered as

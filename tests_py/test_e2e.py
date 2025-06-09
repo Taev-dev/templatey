@@ -17,6 +17,7 @@ from templatey.templates import Content
 from templatey.templates import Slot
 from templatey.templates import TemplateConfig
 from templatey.templates import Var
+from templatey.templates import param
 from templatey.templates import template
 
 
@@ -477,11 +478,6 @@ class TestApiE2E:
                 *kwargs,
                 *kwargs.values())
 
-        test_html_config = TemplateConfig(
-            interpolator=NamedInterpolator.CURLY_BRACES,
-            variable_escaper=html_escaper,
-            content_verifier=html_verifier)
-
         nav = '''
             {@func_with_starrings(
                 content.single_string,
@@ -489,7 +485,7 @@ class TestApiE2E:
                 **var.dict_)}
             '''
 
-        @template(test_html_config, 'test_template')
+        @template(html, 'test_template')
         class TestTemplate:
             single_string: Content[str]
             multistring: Content[list[str]]
@@ -526,11 +522,6 @@ class TestApiE2E:
         ++  slot has configured prefix and suffix, but empty tuple is
             passed; all must be omitted
         """
-        test_html_config = TemplateConfig(
-            interpolator=NamedInterpolator.CURLY_BRACES,
-            variable_escaper=html_escaper,
-            content_verifier=html_verifier)
-
         slot_text = '{var.value}'
 
         @template(html, 'slot_template')
@@ -549,7 +540,7 @@ class TestApiE2E:
             slot.nested_1: __suffix__=';\n'}{
             slot.nested_2: __prefix__='!!!!'}''')
 
-        @template(test_html_config, 'test_template')
+        @template(html, 'test_template')
         class OuterTemplate:
             configged: Content[str | None]
             omitted: Content[str | None]
@@ -573,3 +564,41 @@ class TestApiE2E:
                 nested_2=()))
 
         assert render_result == '__foo..;\nbar;\nrab;\n'
+
+    def test_renderer(self):
+        """Specifying a renderer on a field must correctly alter the
+        parameter value. Additionally, the ordering with respect to
+        escapers and verifiers must also hold true (ie, the renderer
+        runs first, then the escaper / verifier).
+        """
+        template_text = '''{
+            content.good_content}{
+            var.borderline_var}{
+            var.omitted_var_value}{
+            content.illegal_content_tag}'''
+
+        @template(html, 'test_template')
+        class RendererTemplate:
+            good_content: Content[bool] = param(
+                prerenderer=
+                    lambda value: '<p>yes</p>' if value else '<p>no</p>')
+            borderline_var: Var[bool] = param(
+                prerenderer=lambda value: '<yes>' if value else '<no>')
+            omitted_var_value: Var[str] = param(
+                prerenderer=lambda value: None)
+            illegal_content_tag: Content[str] = param(
+                prerenderer=lambda value: 'caught!')
+
+        render_env = RenderEnvironment(
+            env_functions=(),
+            template_loader=DictTemplateLoader(
+                templates={'test_template': template_text,}))
+        render_env.load_sync(RendererTemplate)
+        render_result = render_env.render_sync(
+            RendererTemplate(
+                good_content=True,
+                borderline_var=False,
+                omitted_var_value='better not find me!',
+                illegal_content_tag='<script></script>'))
+
+        assert render_result == '<p>yes</p>&lt;no&gt;caught!'

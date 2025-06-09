@@ -6,6 +6,7 @@ from templatey.templates import InjectedValue
 from templatey.templates import Slot
 from templatey.templates import TemplateConfig
 from templatey.templates import Var
+from templatey.templates import param
 from templatey.templates import template
 
 __all__ = [
@@ -16,6 +17,7 @@ __all__ = [
     'Slot',
     'TemplateConfig',
     'Var',
+    'param',
     'prebaked',
     'template',
 ]
