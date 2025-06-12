@@ -64,7 +64,10 @@ class FuncExecutionResult:
         if self.retval is not None:
             for item in self.retval:
                 if is_template_instance(item):
-                    # Hmm, somehow the TypeIs isn't working
+                    # This doesn't fully work; because of the missing
+                    # intersection type, there's nothing linking the xable that
+                    # this checks for with the params instance that the type
+                    # expects us to yield back
                     yield item  # type: ignore
 
 

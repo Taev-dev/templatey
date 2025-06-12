@@ -8,7 +8,12 @@ readme = "README.md"
 
 dependencies = [
     "docnote>=2025.5.26.1",
-    "typing_extensions>=4.12.2; python_version < '3.13'",
+    "typing_extensions>=4.12.2",
+    # I really wanted to restrict this to ONLY the situations where it's
+    # required, but I can't get pyright to work correctly that way. Either it
+    # complains about the stdlib import or the typing_extensions import, and
+    # adding a type: ignore causes the TypeIs to always be ``Unknown``.
+    # "typing_extensions>=4.12.2; python_version < '3.13'",
 ]
 
 [project.optional-dependencies]
