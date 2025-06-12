@@ -111,8 +111,8 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
             signature=template_xable._templatey_signature,
             provenance=TemplateProvenance((
                 TemplateProvenanceNode(
-                    parent_slot_key='',
-                    parent_slot_index=-1,
+                    encloser_slot_key='',
+                    encloser_slot_index=-1,
                     instance_id=id(template_instance),
                     instance=template_instance),)),
             instance=template_instance,
@@ -211,8 +211,8 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                         signature=slot_instance._templatey_signature,
                         provenance=TemplateProvenance(
                             (*render_node.provenance, TemplateProvenanceNode(
-                                parent_slot_key=next_part.name,
-                                parent_slot_index=next(provenance_counter),
+                                encloser_slot_key=next_part.name,
+                                encloser_slot_index=next(provenance_counter),
                                 instance_id=id(slot_instance),
                                 instance=slot_instance))),
                         prerenderers=slot_instance._templatey_prerenderers)
@@ -566,8 +566,8 @@ def _build_render_stack_extension(
                     signature=template_xable._templatey_signature,
                     provenance=TemplateProvenance((
                         TemplateProvenanceNode(
-                            parent_slot_key='',
-                            parent_slot_index=-1,
+                            encloser_slot_key='',
+                            encloser_slot_index=-1,
                             instance_id=id(func_result_part),
                             instance=func_result_part),)),
                     instance=func_result_part,

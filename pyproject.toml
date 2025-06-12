@@ -131,3 +131,7 @@ pythonVersion = "3.13"
 pythonPlatform = "Linux"
 # If you run into import issues, see:
 # https://github.com/microsoft/pyright/blob/main/docs/import-resolution.md
+
+reportUnknownVariableType = "information"
+reportUnknownMemberType = "information"
+ 

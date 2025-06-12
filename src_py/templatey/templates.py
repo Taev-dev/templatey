@@ -59,10 +59,10 @@ else:
 # the dataclass transform. Unfortunately, type intersections don't yet exist in
 # python, so we have to resort to this (overly broad) type
 TemplateParamsInstance = DataclassInstance
+type TemplateClass = type[TemplateParamsInstance]
 logger = logging.getLogger(__name__)
 
 
-type TemplateClass = type[TemplateParamsInstance]
 # Technically, these should use the TemplateIntersectable from templates.py,
 # but since we can't define type intersections yet...
 type Slot[T: TemplateParamsInstance] = Annotated[
@@ -356,9 +356,9 @@ class TemplateProvenanceNode:
     """TemplateProvenanceNode instances are unique to the exact location
     on the exact render tree of a particular template instance. If the
     template instance gets reused within the same render tree, it will
-    have multiple provenance nodes. And each different slot in a parent
-    will have a separate provenance node, potentially with different
-    namespace overrides.
+    have multiple provenance nodes. And each different slot in an
+    enclosing template will have a separate provenance node, potentially
+    with different namespace overrides.
 
     This is used both during function execution (to calculate the
     concrete value of any parameters), and also while flattening the
@@ -368,13 +368,14 @@ class TemplateProvenanceNode:
     injected into the render by environment functions,** will have an
     empty list of provenance nodes.
 
-    Note that, since overrides from the parent can come exclusively from
-    the template body -- and are therefore shared across all children of
-    the same slot -- they don't get stored within the provenance, since
-    we'd require access to the template bodies, which we don't yet have.
+    Note that, since overrides from the enclosing template can come
+    exclusively from the template body -- and are therefore shared
+    across all nested children of the same slot -- they don't get stored
+    within the provenance, since we'd require access to the template
+    bodies, which we don't yet have.
     """
-    parent_slot_key: str
-    parent_slot_index: int
+    encloser_slot_key: str
+    encloser_slot_index: int
     # The reason to have both the instance and the instance ID is so that we
     # can have hashability of the ID while not imposing an API on the instances
     instance_id: TemplateInstanceID
@@ -397,19 +398,20 @@ class TemplateProvenance(tuple[TemplateProvenanceNode]):
         # added yet, so we might as well just continue the trend!
         current_provenance_node = self[-1]
         value = getattr(current_provenance_node.instance, name, ...)
-        parent_param_name = name
-        parent_slot_key = current_provenance_node.parent_slot_key
-        for parent in reversed(self[0:-1]):
-            template_class = type(parent.instance)
-            parent_template = template_preload[template_class]
-            parent_overrides = parent_template.slots[parent_slot_key].params
+        encloser_param_name = name
+        encloser_slot_key = current_provenance_node.encloser_slot_key
+        for encloser in reversed(self[0:-1]):
+            template_class = type(encloser.instance)
+            encloser_template = template_preload[template_class]
+            encloser_overrides = (
+                encloser_template.slots[encloser_slot_key].params)
 
-            if parent_param_name in parent_overrides:
-                value = parent_overrides[parent_param_name]
+            if encloser_param_name in encloser_overrides:
+                value = encloser_overrides[encloser_param_name]
 
                 if isinstance(value, NestedContentReference):
-                    parent_slot_key = parent.parent_slot_key
-                    parent_param_name = value.name
+                    encloser_slot_key = encloser.encloser_slot_key
+                    encloser_param_name = value.name
                     value = ...
                 else:
                     break
@@ -437,19 +439,20 @@ class TemplateProvenance(tuple[TemplateProvenanceNode]):
         # added yet, so we might as well just continue the trend!
         current_provenance_node = self[-1]
         value = getattr(current_provenance_node.instance, name, ...)
-        parent_param_name = name
-        parent_slot_key = current_provenance_node.parent_slot_key
-        for parent in reversed(self[0:-1]):
-            template_class = type(parent.instance)
-            parent_template = template_preload[template_class]
-            parent_overrides = parent_template.slots[parent_slot_key].params
+        encloser_param_name = name
+        encloser_slot_key = current_provenance_node.encloser_slot_key
+        for encloser in reversed(self[0:-1]):
+            template_class = type(encloser.instance)
+            encloser_template = template_preload[template_class]
+            encloser_overrides = (
+                encloser_template.slots[encloser_slot_key].params)
 
-            if parent_param_name in parent_overrides:
-                value = parent_overrides[parent_param_name]
+            if encloser_param_name in encloser_overrides:
+                value = encloser_overrides[encloser_param_name]
 
                 if isinstance(value, NestedVariableReference):
-                    parent_slot_key = parent.parent_slot_key
-                    parent_param_name = value.name
+                    encloser_slot_key = encloser.encloser_slot_key
+                    encloser_param_name = value.name
                     value = ...
                 else:
                     break
@@ -464,15 +467,60 @@ class TemplateProvenance(tuple[TemplateProvenanceNode]):
         return value
 
 
+@dataclass(frozen=True, slots=True)
+class ForwardRefSlotType:
+    """We use this to find all possible ForwardRefSlotType instances
+    for a particular pending template.
+
+    Note that, by definition, forward references can only happen in two
+    situations:
+    ++  within the same module or closure, by something declared later
+        on during execution
+    ++  because of something hidden behind a ``if typing.TYPE_CHECKING``
+        block in imports
+    (Any other scenario would result in import failures preventing the
+    module's execution).
+
+    Names imported behind ``TYPE_CHECKING`` blocks can **only** be
+    resolved using explicit helpers in the ``@template`` decorator.
+    (TODO: need to add those!). There's just no way around that one;
+    by definition, it's a circular import, and the name isn't available
+    at runtime. So you need an escape hatch.
+
+    Therefore, unless passed in an explicit module name because of the
+    aforementioned escape hatch, these must always happen from within
+    the same module as the template itself.
+
+    Furthermore, we make one assumption here for the purposes of
+    doing as much work as possible at import time, ahead of the first
+    call to render a template: that the enclosing template references
+    the nested template by the nested template's proper name, and
+    doesn't rename it.
+
+    The only workaround for a renamed nested template would be to
+    create a dedicated resolution function, to be called at first
+    render time, that re-inspects the template's type annotations, and
+    figures out exactly what type it uses at that point in time. That's
+    a mess, so.... we'll punt on it.
+    """
+    module: str
+    name: str
+    scope: FrameType | None
+
+
 # Note that the string annotation here is required because of the forward ref,
 # despite the __future__ import
-class _SlotTreeNode(list['_SlotTreeRoute']):
+class _SlotTreeNode[T: TemplateClass | ForwardRefSlotType](
+        list['_SlotTreeRoute[T]']):
     """The purpose of the slot tree is to precalculate what sequences of
     getattr() calls we need to traverse to arrive at every instance of a
     particular slot type for a given template, including all nested
     templates.
 
     **These are optimized for rendering, not for template declaration.**
+    Also note that these are optimized for slots that are not declared
+    as type unions; type unions will result in a number of unnecessary
+    comparisons against the routes of the other slot types in the union.
 
     The reason this is useful is for batching during rendering. This is
     important for function calls: it allows us to pre-execute all env
@@ -489,7 +537,7 @@ class _SlotTreeNode(list['_SlotTreeRoute']):
     """
     # We use this to make the logic cleaner when merging trees, but we want
     # the faster performance of the tuple when actually traversing the tree
-    _routes_by_slot_name: dict[str, _SlotTreeRoute]
+    _routes_by_slot_path: dict[tuple[str, T], _SlotTreeRoute]
     # We use this to limit the number of entries we need in the transmogrifier
     # lookup during tree merging/copying
     is_recursive: bool
@@ -498,39 +546,42 @@ class _SlotTreeNode(list['_SlotTreeRoute']):
     # instance
     is_terminus: bool
 
-    def __new__(
-            cls,
-            routes: Iterable[_SlotTreeRoute] | None = None,
+    def __init__(
+            self,
+            routes: Iterable[_SlotTreeRoute[T]] | None = None,
             *,
             is_recursive: bool = False,
-            is_terminus: bool = False,
-            ) -> _SlotTreeNode:
+            is_terminus: bool = False,):
         if routes is None:
-            self = super().__new__(cls)
+            super().__init__()
         else:
-            self = super().__new__(cls, routes)
+            super().__init__(routes)
 
         self.is_recursive = is_recursive
         self.is_terminus = is_terminus
-        self._routes_by_slot_name = {route[0]: route for route in self}
-        return self
+        self._routes_by_slot_path = {
+            (route[0], route[1]): route for route in self}
 
-    def append(self, route: _SlotTreeRoute):
-        slot_name = route[0]
-        if slot_name in self._routes_by_slot_name:
+    def append(self, route: _SlotTreeRoute[T]):
+        slot_path = (route[0], route[1])
+        if slot_path in self._routes_by_slot_path:
             raise ValueError(
                 'Templatey internal error: attempt to append duplicate slot '
-                + 'name! Please search for / report issue to github along '
-                + 'with a traceback.')
+                + 'name for same slot type! Please search for / report issue '
+                + 'to github along with a traceback.')
 
         super().append(route)
-        self._routes_by_slot_name[slot_name] = route
+        self._routes_by_slot_path[slot_path] = route
 
-    def extend(self, routes: Iterable[_SlotTreeRoute]):
+    def extend(self, routes: Iterable[_SlotTreeRoute[T]]):
         routes, routes_copy_1, routes_copy_2 = tee_iterable(routes, 3)
 
+        # The slightly awkward sequencing here is so that it's an atomic
+        # operation: check everything first, then update.
+        # Not strictly necessary, but nice in the "be kind, rewind" kind of
+        # way
         if any(
-            route_copy[0] in self._routes_by_slot_name
+            (route_copy[0], route_copy[1]) in self._routes_by_slot_path
             for route_copy in routes_copy_1
         ):
             raise ValueError(
@@ -539,61 +590,55 @@ class _SlotTreeNode(list['_SlotTreeRoute']):
                 + 'with a traceback.')
 
         super().extend(routes)
-        self._routes_by_slot_name.update({
-            route_copy[0]: route_copy for route_copy in routes_copy_2})
+        self._routes_by_slot_path.update({
+            (route_copy[0], route_copy[1]): route_copy
+            for route_copy in routes_copy_2})
 
-    def has_route_for(self, slot_name: str) -> bool:
-        return slot_name in self._routes_by_slot_name
+    def has_route_for(
+            self,
+            slot_name: str,
+            slot_type: T
+            ) -> bool:
+        return (slot_name, slot_type) in self._routes_by_slot_path
 
-    def get_route_for(self, slot_name: str) -> _SlotTreeRoute:
-        return self._routes_by_slot_name[slot_name]
+    def get_route_for(
+            self,
+            slot_name: str,
+            slot_type: T
+            ) -> _SlotTreeRoute:
+        return self._routes_by_slot_path[(slot_name, slot_type)]
 
 
-class _SlotTreeRoute(tuple[str, _SlotTreeNode]):
+class _SlotTreeRoute[T: TemplateClass | ForwardRefSlotType](
+        # Note: the ordering here is to emphasize the fact that the slot
+        # name is on the ENCLOSING template, but the slot type is from the
+        # NESTED template
+        tuple[str, T, _SlotTreeNode]):
     """An individual route on the slot tree is defined by the attribute
-    name for the slot, and the subtree from the slot class.
+    name for the slot, the slot type, and the subtree from the slot
+    class.
 
-    TODO: add an explicit terminus to support partially-dissimilar
-    unions.
+    These are optimized for the non-union case. Traversing the slot tree
+    with union types will result in a bunch of unnecessary comparisons
+    against slot names of different slot types.
     """
-    # We use this to detect recursion loops when merging trees.
-    # Note: each route is a different slot, and therefore usually also a
-    # different slot class, but it might be a union, which we convert into
-    # a set.
-    slot_types: set[type[TemplateParamsInstance] | ForwardReferenceParam]
 
     def __new__(
             cls,
             slot_name: str,
+            slot_type: T,
             subtree: _SlotTreeNode,
-            *,
-            slot_types:
-                set[type[TemplateParamsInstance] | ForwardReferenceParam]
             ) -> _SlotTreeRoute:
-        self = super().__new__(cls, (slot_name, subtree))
-        self.slot_types = slot_types
-
+        self = super().__new__(cls, (slot_name, slot_type, subtree))
         return self
 
-    @classmethod
-    def from_slot_type(
-            cls,
-            slot_name: str,
-            subtree: _SlotTreeNode,
-            *,
-            # Note: Unions automatically get converted into a set.
-            slot_type:
-                type[TemplateParamsInstance]
-                | ForwardReferenceParam
-                | UnionType,
-            ) -> _SlotTreeRoute:
-
-        if isinstance(slot_type, UnionType):
-            slot_types = set(slot_type.__args__)
-        else:
-            slot_types = {slot_type}
-
-        return cls(slot_name, subtree, slot_types=slot_types)
+    @property
+    def subtree(self) -> _SlotTreeNode:
+        """This is slower than directly accessing the tuple values, but
+        it makes for clearer code during tree building, where
+        performance isn't quite so critical.
+        """
+        return self[2]
 
 
 type TemplateInstanceID = int
@@ -620,21 +665,22 @@ class TemplateSignature:
     content_names: frozenset[str]
     # Note that this gets updated when forward references are resolved, so
     # it's easiest to keep it a set instead of a frozenset
-    included_template_classes: set[type[TemplateParamsInstance]]
+    included_template_classes: set[TemplateClass]
 
     # Note that these contain all included types, not just the ones on the
     # outermost layer that are associated with the signature. In other words,
     # they include the flattened recursion of all included slots, all the way
     # down the tree
-    _slot_tree_lookup: dict[type[TemplateParamsInstance], _SlotTreeNode]
-    _pending_ref_lookup: dict[ForwardReferenceParam, _PendingSlotTree]
+    _slot_tree_lookup: dict[
+        TemplateClass, _SlotTreeNode[TemplateClass]]
+    _pending_ref_lookup: dict[ForwardRefSlotType, _PendingSlotTree]
 
     @classmethod
     def new(
             cls,
             for_cls: type,
             slots: dict[str,
-                type[TemplateParamsInstance]
+                TemplateClass
                 | UnionType
                 | type[ForwardReferenceProxyClass]],
             vars_: dict[str, type | type[ForwardReferenceProxyClass]],
@@ -653,9 +699,9 @@ class TemplateSignature:
         # words, we want to be able to check a template type, and then see all
         # possible getattr() sequences that arrive at an instance of that
         # template type.
-        tree_wip: dict[type[TemplateParamsInstance], _SlotTreeNode]
+        tree_wip: dict[TemplateClass, _SlotTreeNode]
         tree_wip = defaultdict(_SlotTreeNode)
-        pending_ref_lookup: dict[ForwardReferenceParam, _PendingSlotTree] = {}
+        pending_ref_lookup: dict[ForwardRefSlotType, _PendingSlotTree] = {}
         for slot_name, slot_annotation in slots.items():
             cls._extend_wip_slot_and_ref_trees(
                 for_cls,
@@ -674,8 +720,9 @@ class TemplateSignature:
             _pending_ref_lookup=pending_ref_lookup,
             included_template_classes=set(tree_wip))
 
-    @staticmethod
+    @classmethod
     def _extend_wip_slot_and_ref_trees(
+            cls,
             # This is used as a recursion guard. If we have a simple recursion,
             # there (somewhat surprisingly) isn't a forward ref at all when
             # getting the type hints, but instead, the actual class. But we're
@@ -684,24 +731,21 @@ class TemplateSignature:
             for_cls: type,
             slot_name: str,
             slot_annotation:
-                type[TemplateParamsInstance]
+                TemplateClass
                 | UnionType
                 | type[ForwardReferenceProxyClass],
             *,
-            slot_tree_lookup: defaultdict[
-                type[TemplateParamsInstance], _SlotTreeNode],
-            pending_ref_lookup: dict[ForwardReferenceParam, _PendingSlotTree]
+            slot_tree_lookup: defaultdict[TemplateClass, _SlotTreeNode],
+            pending_ref_lookup: dict[ForwardRefSlotType, _PendingSlotTree]
             ) -> None:
         """Builds the slot tree for a single slot on a template class.
-        Returns a tuple of (fully resolved, pending forward reference)
-        lookups.
 
         Keep in mind that child slots might themselves include pending
         trees, so we can't infer based on the annotation type whether
         or not the result will include them or not.
         """
         slot_types: Collection[
-            type[TemplateParamsInstance]
+            TemplateClass
             | type[ForwardReferenceProxyClass]]
 
         if isinstance(slot_annotation, UnionType):
@@ -713,10 +757,10 @@ class TemplateSignature:
             if is_forward_reference_proxy(slot_type):
                 forward_ref = slot_type.REFERENCE_TARGET
                 dest_insertion = _SlotTreeNode()
-                dest_slot_route = _SlotTreeRoute.from_slot_type(
+                dest_slot_route = _SlotTreeRoute(
                     slot_name,
-                    dest_insertion,
-                    slot_type=forward_ref)
+                    forward_ref,
+                    dest_insertion)
 
                 existing_pending_tree = pending_ref_lookup.get(forward_ref)
                 if existing_pending_tree is None:
@@ -737,87 +781,118 @@ class TemplateSignature:
             elif slot_type is for_cls:
                 recursive_slot_tree = slot_tree_lookup[slot_type]
                 recursive_slot_tree.is_recursive = True
-                recursive_slot_route = _SlotTreeRoute.from_slot_type(
+                recursive_slot_route = _SlotTreeRoute(
                     slot_name,
-                    recursive_slot_tree,
-                    slot_type=slot_type)
+                    slot_type,
+                    recursive_slot_tree)
                 recursive_slot_tree.append(recursive_slot_route)
 
+            # Remember that we expanded the union already, so this is
+            # guaranteed to be a single concrete ``slot_type``.
             else:
-                slot_xable = cast(
-                    type[TemplateIntersectable], slot_type)
-                nested_lookup = (
-                    slot_xable._templatey_signature._slot_tree_lookup)
-                nested_pending_refs = (
-                    slot_xable._templatey_signature._pending_ref_lookup)
+                cls._extend_wip_slot_and_ref_trees_for_concrete_slot_type(
+                    slot_name,
+                    slot_type,
+                    slot_tree_lookup=slot_tree_lookup,
+                    pending_ref_lookup=pending_ref_lookup)
 
-                # Note that because of the nested for loop, this will put all
-                # possible slots from the entire union on equal footing.
-                for (
-                    nested_slot_type, nested_slot_tree
-                ) in nested_lookup.items():
-                    _merge_into_slot_tree(
-                        slot_tree_lookup[nested_slot_type],
-                        slot_name,
-                        nested_slot_type,
-                        nested_slot_tree)
+    @staticmethod
+    def _extend_wip_slot_and_ref_trees_for_concrete_slot_type(
+            slot_name: str,
+            slot_type: TemplateClass,
+            *,
+            slot_tree_lookup: defaultdict[TemplateClass, _SlotTreeNode],
+            pending_ref_lookup: dict[ForwardRefSlotType, _PendingSlotTree]
+            ) -> None:
+        """This carves out the slot tree extension for concrete slot
+        types into a dedicated helper function to (theoretically) make
+        testing easier. I say theoretically, because we don't yet have
+        any unit tests for this part of the code, which could make use
+        of the better organization.
+        """
+        enclosing_slot_tree = slot_tree_lookup[slot_type]
+        # Keep in mind that we're mapping out all branches of the tree
+        # here. Templates defining recursive loops will always have
+        # both a terminus and a subtree. So we don't want to overwrite
+        # anything that's already there; we simply want to note that
+        # it can also have a terminus.
+        if enclosing_slot_tree.has_route_for(slot_name, slot_type):
+            existing_route = enclosing_slot_tree.get_route_for(
+                slot_name, slot_type)
+            existing_route.subtree.is_terminus = True
 
-                # Okay, now all we have left to do is transform all of the
-                # pending references on the child into pending references on
-                # the enclosing template.
-                for (
-                    nested_ref_param, nested_pending_slot_tree
-                ) in nested_pending_refs.items():
-                    existing_pending_tree = pending_ref_lookup.get(
-                        nested_ref_param)
+        else:
+            enclosing_slot_tree.append(
+                _SlotTreeRoute(
+                    slot_name,
+                    slot_type,
+                    _SlotTreeNode(is_terminus=True)))
 
-                    if existing_pending_tree is None:
-                        # Transmogrified nodes gives us a lookup from the old
-                        # IDs to the new insertion nodes, allowing us to
-                        # convert the references to the copy.
-                        copied_tree, transmogrified_nodes = _copy_slot_tree(
-                            nested_pending_slot_tree.pending_root_node)
-                        transmogrified_insertion_nodes = [
-                            transmogrified_nodes[id(precopy_insertion_node)]
-                            for precopy_insertion_node
-                            in nested_pending_slot_tree.insertion_nodes
-                            if precopy_insertion_node.is_recursive]
-                        pending_ref_lookup[nested_ref_param] = (
-                            _PendingSlotTree(
-                                pending_root_node=_SlotTreeNode(
-                                    [_SlotTreeRoute.from_slot_type(
-                                        slot_name,
-                                        copied_tree,
-                                        slot_type=nested_ref_param)]),
-                                insertion_nodes=transmogrified_insertion_nodes,
-                                pending_slot_type=nested_ref_param)
-                        )
+        slot_xable = cast(
+            type[TemplateIntersectable], slot_type)
+        nested_lookup = (
+            slot_xable._templatey_signature._slot_tree_lookup)
+        nested_pending_refs = (
+            slot_xable._templatey_signature._pending_ref_lookup)
 
-                    else:
-                        transmogrified_nodes = _merge_into_slot_tree(
-                            existing_pending_tree.pending_root_node,
-                            root_slot_name=slot_name,
-                            to_merge_slot_type=
-                                nested_pending_slot_tree.pending_slot_type,
-                            to_merge=nested_pending_slot_tree.pending_root_node
-                        )
-                        transmogrified_insertion_nodes = [
-                            transmogrified_nodes[id(precopy_insertion_node)]
-                            for precopy_insertion_node
-                            in nested_pending_slot_tree.insertion_nodes]
-                        existing_pending_tree.insertion_nodes.extend(
-                            transmogrified_insertion_nodes)
+        # Note that because of the nested for loop, this will put all
+        # possible slots from the entire union on equal footing.
+        for (
+            nested_slot_type, nested_slot_tree
+        ) in nested_lookup.items():
+            _merge_into_slot_tree(
+                slot_tree_lookup[nested_slot_type],
+                slot_name,
+                nested_slot_type,
+                nested_slot_tree)
 
-                # Note that the empty node here denotes that it doesn't have
-                # any children **for the current node.** That doesn't mean that
-                # the child tree doesn't have any other slots of the same type
-                # (hence using append), but we're mapping ALL of the nodes, and
-                # NOT just the leaves.
-                slot_tree_lookup[slot_type].append(
-                    _SlotTreeRoute.from_slot_type(
-                        slot_name,
-                        _SlotTreeNode(is_terminus=True),
-                        slot_type=slot_type))
+        # Okay, now all we have left to do is transform all of the
+        # pending references on the child into pending references on
+        # the enclosing template.
+        for (
+            nested_ref_param, nested_pending_slot_tree
+        ) in nested_pending_refs.items():
+            existing_pending_tree = pending_ref_lookup.get(
+                nested_ref_param)
+
+            if existing_pending_tree is None:
+                # Transmogrified nodes gives us a lookup from the old
+                # IDs to the new insertion nodes, allowing us to
+                # convert the references to the copy.
+                copied_tree, transmogrified_nodes = _copy_slot_tree(
+                    nested_pending_slot_tree.pending_root_node)
+                transmogrified_insertion_nodes = [
+                    transmogrified_nodes[id(precopy_insertion_node)]
+                    for precopy_insertion_node
+                    in nested_pending_slot_tree.insertion_nodes
+                    if precopy_insertion_node.is_recursive]
+                pending_ref_lookup[nested_ref_param] = (
+                    # Remember: we already expanded the slot type
+                    # from unions!
+                    _PendingSlotTree(
+                        pending_root_node=_SlotTreeNode(
+                            [_SlotTreeRoute(
+                                slot_name,
+                                nested_ref_param,
+                                copied_tree)]),
+                        insertion_nodes=transmogrified_insertion_nodes,
+                        pending_slot_type=nested_ref_param)
+                )
+
+            else:
+                transmogrified_nodes = _merge_into_slot_tree(
+                    existing_pending_tree.pending_root_node,
+                    root_slot_name=slot_name,
+                    to_merge_slot_type=
+                        nested_pending_slot_tree.pending_slot_type,
+                    to_merge=nested_pending_slot_tree.pending_root_node
+                )
+                transmogrified_insertion_nodes = [
+                    transmogrified_nodes[id(precopy_insertion_node)]
+                    for precopy_insertion_node
+                    in nested_pending_slot_tree.insertion_nodes]
+                existing_pending_tree.insertion_nodes.extend(
+                    transmogrified_insertion_nodes)
 
     def extract_function_invocations(
             self,
@@ -834,8 +909,8 @@ class TemplateSignature:
         # Things to keep in mind when reading the following code:
         # ++  it may be easiest to step through using an example, perhaps from
         #     the test suite.
-        # ++  parent template classes can have multiple slots with the same
-        #     child template class. We call these "parallel slots" in this
+        # ++  enclosing template classes can have multiple slots with the same
+        #     nested template class. We call these "parallel slots" in this
         #     function; they're places where the slot search tree needs to
         #     split into multiple branches
         # ++  the combinatorics here can be confusing, because we can have both
@@ -855,7 +930,8 @@ class TemplateSignature:
         # The parallel slot backlog is a stack of stacks. The outer stack
         # corresponds to the depth in the slot tree. The inner stack
         # contains all remaining slots to search for a particular depth.
-        parallel_slot_backlog_stack: list[list[_SlotTreeRoute]]
+        parallel_slot_backlog_stack: list[
+            list[_SlotTreeRoute[TemplateClass]]]
 
         # The goal of the instance backlog stack is to keep track of all the
         # INSTANCES (not slots / attributes!) that are also on the search path,
@@ -877,15 +953,15 @@ class TemplateSignature:
 
         # These are all used per-iteration, and don't keep state across
         # iterations.
-        child_slot_name: str
-        child_slot_routes: list[_SlotTreeRoute]
-        child_instances: Sequence[TemplateParamsInstance]
+        nested_slot_name: str
+        nested_slot_routes: list[_SlotTreeRoute]
+        nested_instances: Sequence[TemplateParamsInstance]
 
         # This is used in multiple loop iterations, plus at the end to add any
         # function calls for the root instance.
         root_provenance_node = TemplateProvenanceNode(
-            parent_slot_key='',
-            parent_slot_index=-1,
+            encloser_slot_key='',
+            encloser_slot_index=-1,
             instance_id=id(root_template_instance),
             instance=root_template_instance)
 
@@ -937,38 +1013,45 @@ class TemplateSignature:
                     # current instances that lead to the target template_class.
                     # Choose the last one so we can pop it efficiently.
                     else:
-                        child_slot_name, child_slot_routes = (
-                            parallel_slot_backlog_stack[-1][-1])
+                        (
+                            nested_slot_name,
+                            nested_slot_type,
+                            nested_slot_routes
+                        ) = parallel_slot_backlog_stack[-1][-1]
+
                         current_instance = (
                             instance_backlog_stack[-1][0].instance)
-                        child_instances = getattr(
+                        nested_instances = getattr(
                             # Note: the default here is necessary because of
                             # type unions; we need to support the case where
                             # the two classes in the union have different
                             # slot names
-                            current_instance, child_slot_name, ())
-                        child_index = itertools.count()
+                            current_instance, nested_slot_name, ())
+                        nested_index = itertools.count()
 
                         # The parallel path we chose has more steps on the way
                         # to the leaf node, so we need to continue deeper into
                         # the tree.
-                        if child_slot_routes:
-                            child_provenances = tuple(
+                        if nested_slot_routes:
+                            nested_provenances = tuple(
                                 TemplateProvenanceNode(
-                                    parent_slot_key=child_slot_name,
-                                    parent_slot_index=next(child_index),
-                                    instance_id=id(child_instance),
-                                    instance=child_instance)
-                                for child_instance in child_instances)
-                            instance_history_stack.append(child_provenances)
+                                    encloser_slot_key=nested_slot_name,
+                                    encloser_slot_index=next(nested_index),
+                                    instance_id=id(nested_instance),
+                                    instance=nested_instance)
+                                for nested_instance in nested_instances
+                                if isinstance(
+                                    nested_instance, nested_slot_type))
+                            instance_history_stack.append(nested_provenances)
                             instance_backlog_stack.append(
-                                deque(child_provenances))
+                                deque(nested_provenances))
                             parallel_slot_backlog_stack.append(
-                                list(child_slot_routes))
+                                list(nested_slot_routes))
 
                         # The parallel path we chose is actually a leaf node,
-                        # which means that each child instance is a provenance.
-                        else:
+                        # which means that each nested instance is a
+                        # provenance.
+                        elif nested_slot_routes.is_terminus:
                             partial_provenance = tuple(
                                 instance_backlog_level[0]
                                 for instance_backlog_level
@@ -977,17 +1060,17 @@ class TemplateSignature:
                             # Note that using extend here is basically just a
                             # shorthand for repeatedly iterating on the
                             # outermost while loop after appending the
-                            # children (like we did with child_slot_routes)
+                            # children (like we did with nested_slot_routes)
                             provenances.extend(TemplateProvenance(
                                 (
                                     *partial_provenance,
                                     TemplateProvenanceNode(
-                                        parent_slot_key=child_slot_name,
-                                        parent_slot_index=next(child_index),
-                                        instance_id=id(child_instance),
-                                        instance=child_instance)))
-                                for child_instance
-                                in child_instances)
+                                        encloser_slot_key=nested_slot_name,
+                                        encloser_slot_index=next(nested_index),
+                                        instance_id=id(nested_instance),
+                                        instance=nested_instance)))
+                                for nested_instance
+                                in nested_instances)
 
                             # Note that we already popped from the parallel
                             instance_backlog_stack[-1].popleft()
@@ -1032,7 +1115,7 @@ def _extract_frame_scope() -> FrameType | None:
     are used, we need a way to differentiate between identically-named
     templates within different functions of the same module (or the
     toplevel of the module). We do this by including the frame object
-    on the ForwardReferenceParam whenever we're in a closure. This
+    on the ForwardRefSlotType whenever we're in a closure. This
     method relies upon ``inspect`` to extract it.
 
     Note that this can be very sensitive to where, exactly, you put it
@@ -1120,54 +1203,13 @@ class _PendingSlotTree:
     all of the insertion nodes, and then store the pending slot tree
     in the slot tree lookup using the resolved template class.
     """
-    pending_slot_type: ForwardReferenceParam
+    pending_slot_type: ForwardRefSlotType
     pending_root_node: _SlotTreeNode
     insertion_nodes: list[_SlotTreeNode]
 
 
-@dataclass(frozen=True, slots=True)
-class ForwardReferenceParam:
-    """We use this to find all possible ForwardReferenceParam instances
-    for a particular pending template.
-
-    Note that, by definition, forward references can only happen in two
-    situations:
-    ++  within the same module or closure, by something declared later
-        on during execution
-    ++  because of something hidden behind a ``if typing.TYPE_CHECKING``
-        block in imports
-    (Any other scenario would result in import failures preventing the
-    module's execution).
-
-    Names imported behind ``TYPE_CHECKING`` blocks can **only** be
-    resolved using explicit helpers in the ``@template`` decorator.
-    (TODO: need to add those!). There's just no way around that one;
-    by definition, it's a circular import, and the name isn't available
-    at runtime. So you need an escape hatch.
-
-    Therefore, unless passed in an explicit module name because of the
-    aforementioned escape hatch, these must always happen from within
-    the same module as the template itself.
-
-    Furthermore, we make one assumption here for the purposes of
-    doing as much work as possible at import time, ahead of the first
-    call to render a template: that the enclosing template references
-    the nested template by the nested template's proper name, and
-    doesn't rename it.
-
-    The only workaround for a renamed nested template would be to
-    create a dedicated resolution function, to be called at first
-    render time, that re-inspects the template's type annotations, and
-    figures out exactly what type it uses at that point in time. That's
-    a mess, so.... we'll punt on it.
-    """
-    module: str
-    name: str
-    scope: FrameType | None
-
-
 class ForwardReferenceProxyClass(Protocol):
-    REFERENCE_TARGET: ClassVar[ForwardReferenceParam]
+    REFERENCE_TARGET: ClassVar[ForwardRefSlotType]
 
 
 def is_forward_reference_proxy(
@@ -1181,7 +1223,7 @@ def _copy_slot_tree(
         into_tree: _SlotTreeNode | None = None
         ) -> tuple[_SlotTreeNode, dict[int, _SlotTreeNode]]:
     """This creates a copy of an existing slot tree. We use it when
-    merging nested slot trees into parents; otherwise, we end up with
+    merging nested slot trees into enclosers; otherwise, we end up with
     a huge mess of "it's not clear what object holds which slot tree"
     that is very difficult to reason about. This is slightly more memory
     intensive, but... again, this is much, much easier to reason about.
@@ -1221,7 +1263,7 @@ def _copy_slot_tree(
 
         next_slot_route = current_stack_frame.insertion_subtree[
             current_stack_frame.next_subtree_index]
-        next_slot_name, next_subtree = next_slot_route
+        next_slot_name, next_slot_type, next_subtree = next_slot_route
 
         next_subtree_id = id(next_subtree)
         already_copied_node = transmogrified_nodes.get(next_subtree_id)
@@ -1240,8 +1282,8 @@ def _copy_slot_tree(
             current_stack_frame.existing_subtree.append(
                 _SlotTreeRoute(
                     next_slot_name,
-                    new_subtree,
-                    slot_types=next_slot_route.slot_types))
+                    next_slot_type,
+                    new_subtree,))
             copy_stack.append(_SlotTreeTraversalFrame(
                 next_subtree_index=0,
                 existing_subtree=new_subtree,
@@ -1251,21 +1293,20 @@ def _copy_slot_tree(
             current_stack_frame.existing_subtree.append(
                 _SlotTreeRoute(
                     next_slot_name,
-                    already_copied_node,
-                    slot_types=next_slot_route.slot_types))
+                    next_slot_type,
+                    already_copied_node,))
 
         current_stack_frame.next_subtree_index += 1
 
     return copied_tree, transmogrified_nodes
 
 
-def _merge_into_slot_tree(
+def _merge_into_slot_tree[T: TemplateClass | ForwardRefSlotType](
         existing_tree: _SlotTreeNode,
         root_slot_name: str,
-        to_merge_slot_type:
-            type[TemplateParamsInstance] | ForwardReferenceParam,
-        to_merge: _SlotTreeNode
-        ) -> dict[int, _SlotTreeNode]:
+        to_merge_slot_type: T,
+        to_merge: _SlotTreeNode[T]
+        ) -> dict[int, _SlotTreeNode[T]]:
     """This traverses the existing tree, merging in the slot_name and
     its subtrees into the correct locations in the existing slot tree,
     recursively.
@@ -1294,10 +1335,10 @@ def _merge_into_slot_tree(
         next_subtree_index=0,
         existing_subtree=existing_tree,
         insertion_subtree=_SlotTreeNode([
-            _SlotTreeRoute.from_slot_type(
+            _SlotTreeRoute(
                 root_slot_name,
-                to_merge,
-                slot_type=to_merge_slot_type)]))]
+                to_merge_slot_type,
+                to_merge,)]))]
     # Yes, in theory, this one specific operation of merging trees would be
     # faster if the trees were dicts instead of iterative structures. But
     # we're not optimizing for tree merging; we're optimizing for rendering!
@@ -1308,76 +1349,44 @@ def _merge_into_slot_tree(
             merge_stack.pop()
             continue
 
+        existing_subtree = current_stack_frame.existing_subtree
         next_slot_route = current_stack_frame.insertion_subtree[
             current_stack_frame.next_subtree_index]
-        next_slot_name, next_subtree = next_slot_route
+        next_slot_name, next_slot_type, next_subtree = next_slot_route
 
-        if current_stack_frame.existing_subtree.has_route_for(next_slot_name):
-            next_existing_route = (
-                current_stack_frame.existing_subtree.get_route_for(
-                    next_slot_name))
-            __, next_existing_subtree = next_existing_route
+        if existing_subtree.has_route_for(next_slot_name, next_slot_type):
+            next_existing_route = existing_subtree.get_route_for(
+                    next_slot_name, next_slot_type)
+            __, __, next_existing_subtree = next_existing_route
 
             # We haven't hit a leaf node yet, so we need to keep looking
-            # deeper.
+            # deeper once we're done.
+            # Note: regardless of leaf or nor, we'll update the terminus/etc
+            # in just a second.
             if next_subtree:
                 merge_stack.append(_SlotTreeTraversalFrame(
                     next_subtree_index=0,
                     existing_subtree=next_existing_subtree,
                     insertion_subtree=next_subtree))
 
-            # Note that both of the remaining cases indicate that
-            # we hit a leaf node on the to-merge tree. Note though that
-            # this isn't definitively also a leaf node on the existing
-            # tree, in case you have a union between two very similar, but
-            # not identical, trees. Hence the two cases.
-            elif next_existing_subtree:
-                # TODO: we actually have most of the puzzle pieces for this
-                # already in place, we just need to wire up the terminus
-                raise NotImplementedError('''
-                    You've hit a very particular edge case that we haven't
-                    implemented yet.
-
-                    Specifically, you have two very similar set of template
-                    slot trees, but they differ slightly. One of them has
-                    a "terminus" node at a particular point -- ie, a leaf
-                    node for that particular template slot class -- while
-                    the other continues on deeper within the slot tree
-                    **to the same template slot class**.
-
-                    We really need to update the slot tree to have
-                    dedicated leaf node objects, but until then, we can't
-                    accommodate this edge case without introducing bugs.
-
-                    If you encounter this, please search for and/or file
-                    an issue on github!
-                    ''')
-                copied_leaf: _SlotTreeNode = []
-                current_stack_frame.existing_subtree.append(
-                    (next_slot_name, copied_leaf))
-                all_transmogrified_nodes[id(next_subtree)] = copied_leaf
-
-            # In this case, it really IS identical, but we've nothing to do.
-            else:
-                pass
-
             next_existing_subtree.is_recursive |= next_subtree.is_recursive
             next_existing_subtree.is_terminus |= next_subtree.is_terminus
             if next_existing_subtree.is_recursive:
                 all_transmogrified_nodes[id(next_subtree)] = (
                     next_existing_subtree)
-            next_existing_route.slot_types.update(next_slot_route.slot_types)
 
-        # Note because it's almost above the fold: this is the "we don't have
-        # an existing route for the next_slot_name" case.
+        # Note: this means there's no existing route for that slot name and
+        # type combo, but there might still be another route for a different
+        # slot type under the same name. It'll be handled on a different
+        # iteration of the merge stack while loop.
         else:
             copied_tree, copied_node_lookup = _copy_slot_tree(next_subtree)
             current_stack_frame.existing_subtree.append(
                 # Just as a reminder, this is deepening the tree by 1 level
                 _SlotTreeRoute(
                     next_slot_name,
-                    copied_tree,
-                    slot_types=next_slot_route.slot_types))
+                    next_slot_type,
+                    copied_tree,))
             all_transmogrified_nodes.update(copied_node_lookup)
 
         current_stack_frame.next_subtree_index += 1
@@ -1405,10 +1414,10 @@ class _SlotTreeTraversalFrame:
 class _TypehintForwardrefLookup(MutableMapping[str, type]):
     template_module: str
     template_scope: FrameType | None
-    captured_refs: set[ForwardReferenceParam] = field(default_factory=set)
+    captured_refs: set[ForwardRefSlotType] = field(default_factory=set)
 
     def __getitem__(self, key: str) -> type:
-        forward_ref = ForwardReferenceParam(
+        forward_ref = ForwardRefSlotType(
             module=self.template_module,
             name=key,
             scope=self.template_scope)
@@ -1472,7 +1481,7 @@ def make_template_definition[T: type](
             ++  the type hint is a forward reference.
 
             In both cases, we'll wrap the request into a
-            ``ForwardReferenceParam``, which will then hopefully be
+            ``ForwardRefSlotType``, which will then hopefully be
             resolved as soon as the forward reference is declared.
             If it's never resolved, however, we will raise whenever
             ``render`` is called.
@@ -1566,13 +1575,13 @@ def _resolve_forward_references(
     """The very last thing to do before we return the class after
     template decoration is to resolve all forward references inside the
     class. To do that, we first need to construct the corresponding
-    ForwardReferenceParam and check for it in the pending forward refs
+    ForwardRefSlotType and check for it in the pending forward refs
     lookup.
 
     If we find one, we then need to update the values there, while
     checking for and correctly handling recursion.
     """
-    lookup_key = ForwardReferenceParam(
+    lookup_key = ForwardRefSlotType(
         module=pending_template_cls.__module__,
         name=pending_template_cls.__name__,
         scope=_extract_frame_scope())
@@ -1583,25 +1592,8 @@ def _resolve_forward_references(
         
     #     TODO LEFT OFF HERE
         
-        
-    #     we're not getting the correct frames, because the proxy we're using
-    #     to construct them is pulling the frame from stdlib collections instead
-    #     of the caller library. oops.
-        
     #     otherwise, basically, you just need to finish what's described
     #     in the docstring.
-        
-    #     the other option would be to ... shit, I'm not even sure, tbh.
-    #     the whole tree copying business would have to be moved, I think?
-    #     if you wanted to do this as a "on first render" kind of thing?
-    #     plus that would make the render driver really ugly.
-
-    #     maybe it would be an "on first load"? that would at least be better
-    #     than in the render driver.
-        
-    #     but still... really not sure how to approach this if I can't get the
-    #     frame scope to match up.
-        
         
     #     ''')
 
