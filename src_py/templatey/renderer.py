@@ -287,8 +287,8 @@ class _RenderContext:
         # check for membership, so we might as well keep it a list
         template_backlog_local_roots = [root_template]
         template_backlog_included_classes = set(
-            root_template_xable._templatey_signature.included_template_classes)
-        template_backlog_included_classes.add(type(root_template))
+            root_template_xable
+            ._templatey_signature.included_template_classes)
         function_backlog = []
         template_preload = self.template_preload
         function_precall = self.function_precall
@@ -392,8 +392,6 @@ class _RenderContext:
                     template_backlog_included_classes.update(
                         injected_xable._templatey_signature
                         .included_template_classes)
-                    template_backlog_included_classes.add(
-                        type(injected_template))
 
 
 type _PrecallExecutionRequest = tuple[

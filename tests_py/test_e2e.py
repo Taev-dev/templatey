@@ -602,3 +602,178 @@ class TestApiE2E:
                 illegal_content_tag='<script></script>'))
 
         assert render_result == '<p>yes</p>&lt;no&gt;caught!'
+
+    def test_forward_reference_loop(self):
+        """Forward reference loops must render correctly.
+        """
+        # Lol where have I seen this before?
+        # <div><div><div>...</div></div></div>
+        div = r'''<div>{
+            slot.div:
+                __prefix__="\n                ",
+                __suffix__='\n                '
+            }{var.body}</div>'''
+
+        nav_section = r'''<ul>{
+            slot.nav_items:
+                __prefix__="\n            ",
+                __suffix__="\n            "
+            }</ul>'''
+        nav_item = r'''<li>{
+            slot.nav_item_content:
+                __prefix__="\n            ",
+                __suffix__="\n            "
+            }</li>'''
+        nav_link = r'<a href="{content.target}">{var.name}</a>'
+
+        page = '''
+            <html>
+            <head><title>{content.title}</title>
+            <body>
+            <header>
+            </header>
+
+            <nav>
+                {slot.nav}
+            </nav>
+
+            <h1>Dear {var.name}</h1>
+            <main>
+                {slot.main}
+            </main>
+            <footer>
+            </footer>
+            </body>
+            </html>
+            '''
+
+        @template(html, 'page')
+        class PageTemplate:
+            name: Var[str]
+            nav: Slot[NavSectionTemplate]
+            title: Content[str]
+            main: Slot[DivTemplate]
+
+        @template(html, 'nav_section')
+        class NavSectionTemplate:
+            nav_items: Slot[NavItemTemplate]
+
+        @template(html, 'nav_item')
+        class NavItemTemplate:
+            nav_item_content: Slot[NavSectionTemplate | NavLinkTemplate]
+
+        @template(html, 'nav_link')
+        class NavLinkTemplate:
+            target: Content[str]
+            name: Var[str]
+
+        @template(html, 'div')
+        class DivTemplate:
+            div: Slot[DivTemplate]
+            body: Var[str | None] = None
+
+        render_env = RenderEnvironment(
+            env_functions=(),
+            template_loader=DictTemplateLoader(
+                templates={
+                    'div': div,
+                    'page': page,
+                    'nav_section': nav_section,
+                    'nav_item': nav_item,
+                    'nav_link': nav_link}))
+
+        render_result = render_env.render_sync(
+            PageTemplate(
+                name='John Doe',
+                title='An example page',
+                main=[
+                    DivTemplate(
+                        div=[
+                            DivTemplate(
+                                div=[DivTemplate(div=(), body='Mainline')]),
+                            DivTemplate(
+                                div=[DivTemplate(div=(), body='Sideline')])])],
+                nav=[
+                    NavSectionTemplate(
+                        nav_items=[
+                            NavItemTemplate(
+                                nav_item_content=[
+                                    NavSectionTemplate(
+                                        nav_items=[
+                                            NavItemTemplate(
+                                                nav_item_content=[
+                                                    NavLinkTemplate(
+                                                        target='/',
+                                                        name='Home'),
+                                                    NavLinkTemplate(
+                                                        target='/blog',
+                                                        name='Blog')])])])]),
+                    NavSectionTemplate(
+                        nav_items=[
+                            NavItemTemplate(
+                                nav_item_content=[
+                                    NavLinkTemplate(
+                                        target='/docs',
+                                        name='Docs home'),
+                                    NavSectionTemplate(
+                                        nav_items=[
+                                            NavItemTemplate(
+                                                nav_item_content=[
+                                                    NavLinkTemplate(
+                                                        target='/docs/foo',
+                                                        name='Foo docs'),
+                                                    NavLinkTemplate(
+                                                        target='/docs/bar',
+                                                        name='Bar docs'),
+                                                ])])])])]))
+
+        assert render_result == '''
+            <html>
+            <head><title>An example page</title>
+            <body>
+            <header>
+            </header>
+
+            <nav>
+                <ul>
+            <li>
+            <ul>
+            <li>
+            <a href="/">Home</a>
+            
+            <a href="/blog">Blog</a>
+            </li>
+            </ul>
+            </li>
+            </ul><ul>
+            <li>
+            <a href="/docs">Docs home</a>
+            
+            <ul>
+            <li>
+            <a href="/docs/foo">Foo docs</a>
+            
+            <a href="/docs/bar">Bar docs</a>
+            </li>
+            </ul>
+            </li>
+            </ul>
+            </nav>
+
+            <h1>Dear John Doe</h1>
+            <main>
+                <div>
+                <div>
+                <div>Mainline</div>
+                </div>
+                
+                <div>
+                <div>Sideline</div>
+                </div>
+                </div>
+            </main>
+            <footer>
+            </footer>
+            </body>
+            </html>
+            '''  # noqa: W293

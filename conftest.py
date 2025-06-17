@@ -1,4 +1,8 @@
+from collections import defaultdict
+
 import pytest
+
+from templatey.templates import _PENDING_FORWARD_REFS
 
 
 def pytest_addoption(parser):
@@ -16,3 +20,18 @@ def pytest_collection_modifyitems(config, items):
     for item in items:
         if 'benchmark' in item.keywords:
             item.add_marker(skip_benchmark)
+
+
+@pytest.fixture(autouse=True, scope='function')
+def clean_pending_forward_refs_registry():
+    """Layers a fresh, clean pending forward refs registry over the
+    default one for testing. Note that this only takes effect WITHIN
+    tests, so it only applies to templates defined within the test
+    functions themselves. Templates defined at a test module level
+    will be unaffected.
+    """
+    token = _PENDING_FORWARD_REFS.set(defaultdict(set))
+    try:
+        yield
+    finally:
+        _PENDING_FORWARD_REFS.reset(token)
