@@ -51,6 +51,12 @@ class MismatchedTemplateSignature(InvalidTemplate):
     """
 
 
+class UnresolvedForwardReference(Exception):
+    """Raised when you attempt to render a template containing a forward
+    reference that was still unresolvable at render time.
+    """
+
+
 class IncompleteTemplateParams(TypeError):
     """Raised when an ellipsis is still present in either slots or
     variables at render time.

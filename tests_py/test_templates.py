@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import FrozenInstanceError
 from dataclasses import is_dataclass
 from typing import cast
@@ -5,6 +7,7 @@ from typing import get_type_hints
 
 import pytest
 
+from templatey.templates import _PENDING_FORWARD_REFS
 from templatey.templates import Content
 from templatey.templates import Slot
 from templatey.templates import TemplateIntersectable
@@ -125,6 +128,214 @@ class TestMakeTemplateDefinition:
             template_config=fake_template_config)
         assert is_template_class(retval)
 
+    def test_forward_ref_works(self):
+        """Slots must be definable using forward references, and these
+        forward references must be recorded on the template alongside
+        the rest of the slot tree.
+
+        Once the reference is available, it must be resolved on the
+        forward-referencing class.
+        """
+        class Bar:
+            foo: Slot[Foo]
+
+        retval = cast(type[TemplateIntersectable], make_template_definition(
+            Bar,
+            dataclass_kwargs={},
+            template_resource_locator=object(),
+            template_config=fake_template_config))
+        assert is_template_class(retval)
+
+        assert len(retval._templatey_signature._pending_ref_lookup) == 1
+        pending_ref = next(iter(
+            retval._templatey_signature._pending_ref_lookup))
+        assert pending_ref.name == 'Foo'
+
+        forward_ref_registry = _PENDING_FORWARD_REFS.get()
+        assert len(forward_ref_registry) == 1
+        assert pending_ref in forward_ref_registry
+        assert forward_ref_registry[pending_ref] == {Bar}
+
+        @template(fake_template_config, object())
+        class Foo:
+            foo: Var[str]
+
+        assert len(retval._templatey_signature._pending_ref_lookup) == 0
+        assert not forward_ref_registry
+        assert Foo in retval._templatey_signature._slot_tree_lookup
+
+    def test_double_forward_ref(self):
+        """Slots must be definable using forward references, and these
+        forward references must be recorded on the template alongside
+        the rest of the slot tree.
+
+        Once the reference is available, it must be resolved on the
+        forward-referencing class.
+
+        This expands on the plain forward ref test case by having
+        additional forward and backward refs on the resolved template
+        class.
+        """
+        class Bar:
+            foo: Slot[Foo]
+
+        retval = cast(type[TemplateIntersectable], make_template_definition(
+            Bar,
+            dataclass_kwargs={},
+            template_resource_locator=object(),
+            template_config=fake_template_config))
+        assert is_template_class(retval)
+
+        assert len(retval._templatey_signature._pending_ref_lookup) == 1
+        pending_ref = next(iter(
+            retval._templatey_signature._pending_ref_lookup))
+        assert pending_ref.name == 'Foo'
+
+        forward_ref_registry = _PENDING_FORWARD_REFS.get()
+        assert len(forward_ref_registry) == 1
+        assert pending_ref in forward_ref_registry
+        assert forward_ref_registry[pending_ref] == {Bar}
+
+        @template(fake_template_config, object())
+        class Baz:
+            zab: Var[str]
+
+        @template(fake_template_config, object())
+        class Foo:
+            oof: Var[str]
+            baz: Slot[Baz]
+            runout: Slot[IRanOutOfFooLikeNames]
+
+        assert len(retval._templatey_signature._pending_ref_lookup) == 1
+        pending_ref = next(iter(
+            retval._templatey_signature._pending_ref_lookup))
+        assert pending_ref.name == 'IRanOutOfFooLikeNames'
+
+        assert len(forward_ref_registry) == 1
+        assert pending_ref in forward_ref_registry
+        assert forward_ref_registry[pending_ref] == {Bar, Foo}
+
+        assert Foo in retval._templatey_signature._slot_tree_lookup
+        assert Baz in retval._templatey_signature._slot_tree_lookup
+
+        @template(fake_template_config, object())
+        class IRanOutOfFooLikeNames:
+            ranout: Var[str]
+
+        assert len(retval._templatey_signature._pending_ref_lookup) == 0
+        assert not forward_ref_registry
+        assert (
+            IRanOutOfFooLikeNames
+            in retval._templatey_signature._slot_tree_lookup)
+
+    def test_nested_forward_ref_works(self):
+        """Slots must be definable using forward references, and these
+        forward references must be recorded on the template alongside
+        the rest of the slot tree.
+
+        Once the reference is available, it must be resolved on the
+        forward-referencing class.
+
+        This expands on the plain forward ref test case by making sure
+        that forward references are correctly passed along from nested
+        templates to their enclosing templates.
+        """
+        @template(fake_template_config, object())
+        class Bar:
+            foo: Slot[Foo]
+
+        class Baz:
+            bar: Slot[Bar]
+
+        retval = cast(type[TemplateIntersectable], make_template_definition(
+            Baz,
+            dataclass_kwargs={},
+            template_resource_locator=object(),
+            template_config=fake_template_config))
+        assert is_template_class(retval)
+
+        assert len(retval._templatey_signature._pending_ref_lookup) == 1
+        pending_ref = next(iter(
+            retval._templatey_signature._pending_ref_lookup))
+        assert pending_ref.name == 'Foo'
+
+        forward_ref_registry = _PENDING_FORWARD_REFS.get()
+        assert len(forward_ref_registry) == 1
+        assert pending_ref in forward_ref_registry
+        assert forward_ref_registry[pending_ref] == {Bar, Baz}
+
+        @template(fake_template_config, object())
+        class Foo:
+            foo: Var[str]
+
+        assert len(retval._templatey_signature._pending_ref_lookup) == 0
+        assert not forward_ref_registry
+        assert Foo in retval._templatey_signature._slot_tree_lookup
+
+    def test_simple_recursion_works(self):
+        """Slots must support recursive references back to the current
+        template, and these must not be considered pending references.
+        """
+        class Foo:
+            # This works if you decorate the class, but not without decoration.
+            # Since we're testing make_template_definition independently of
+            # the decorator, the pragmatic thing is to just ignore here.
+            foo: Slot[Foo]  # type: ignore
+
+        retval = cast(type[TemplateIntersectable], make_template_definition(
+            Foo,
+            dataclass_kwargs={},
+            template_resource_locator=object(),
+            template_config=fake_template_config))
+        assert is_template_class(retval)
+        assert len(retval._templatey_signature._pending_ref_lookup) == 0
+        forward_ref_registry = _PENDING_FORWARD_REFS.get()
+        assert not forward_ref_registry
+        assert Foo in retval._templatey_signature._slot_tree_lookup
+
+    def test_recursion_loop_works(self):
+        """Slots must support recursive reference loops back to the
+        current template using forward references. Initially, the loop
+        must be considered a forward reference, but once resolved, it
+        must not be pending on either class.
+
+        Once the reference is available, it must be resolved on the
+        forward-referencing class.
+        """
+        class Bar:
+            foo: Slot[Foo]
+
+        retval = cast(type[TemplateIntersectable], make_template_definition(
+            Bar,
+            dataclass_kwargs={},
+            template_resource_locator=object(),
+            template_config=fake_template_config))
+        assert is_template_class(retval)
+
+        assert len(retval._templatey_signature._pending_ref_lookup) == 1
+        pending_ref = next(iter(
+            retval._templatey_signature._pending_ref_lookup))
+        assert pending_ref.name == 'Foo'
+
+        forward_ref_registry = _PENDING_FORWARD_REFS.get()
+        assert len(forward_ref_registry) == 1
+        assert pending_ref in forward_ref_registry
+        assert forward_ref_registry[pending_ref] == {Bar}
+
+        @template(fake_template_config, object())
+        class Foo:
+            # This works if you decorate the class, but not without decoration.
+            # Since we're testing make_template_definition independently of
+            # the decorator, the pragmatic thing is to just ignore here.
+            bar: Slot[Bar]  # type: ignore
+        foo_xable = cast(TemplateIntersectable, Foo)
+
+        assert not forward_ref_registry
+        assert len(retval._templatey_signature._pending_ref_lookup) == 0
+        assert not forward_ref_registry
+        assert Foo in foo_xable._templatey_signature._slot_tree_lookup
+        assert Foo in retval._templatey_signature._slot_tree_lookup
+
     def test_config_and_locator_assigned(self):
         """The passed template config must be stored on the class, along
         with the template locator.
@@ -133,7 +344,7 @@ class TestMakeTemplateDefinition:
         class FakeTemplate:
             bar: Var[str]
 
-        retval = cast(TemplateIntersectable, make_template_definition(
+        retval = cast(type[TemplateIntersectable], make_template_definition(
             FakeTemplate,
             dataclass_kwargs={},
             template_resource_locator='my_special_locator',
@@ -154,15 +365,15 @@ class TestMakeTemplateDefinition:
             bar: Var[str]
             baz: Content[str]
 
-        retval = cast(TemplateIntersectable, make_template_definition(
+        retval = cast(type[TemplateIntersectable], make_template_definition(
             FakeTemplate,
             dataclass_kwargs={},
             template_resource_locator=object(),
             template_config=fake_template_config))
         signature = retval._templatey_signature
 
-        assert len(signature.slots) == 1
-        assert 'foo' in signature.slots
+        assert len(signature.slot_names) == 1
+        assert 'foo' in signature.slot_names
 
     def test_slot_extraction_with_union(self):
         """Slots declared as the union of two templates must correctly
@@ -181,15 +392,15 @@ class TestMakeTemplateDefinition:
             bar: Var[str]
             baz: Content[str]
 
-        retval = cast(TemplateIntersectable, make_template_definition(
+        retval = cast(type[TemplateIntersectable], make_template_definition(
             FakeTemplate,
             dataclass_kwargs={},
             template_resource_locator=object(),
             template_config=fake_template_config))
         signature = retval._templatey_signature
 
-        assert len(signature.slots) == 1
-        assert 'foo' in signature.slots
+        assert len(signature.slot_names) == 1
+        assert 'foo' in signature.slot_names
 
     def test_var_extraction(self):
         """Fields declared with Var[...] must be correctly detected
@@ -199,15 +410,15 @@ class TestMakeTemplateDefinition:
             bar: Var[str]
             baz: Content[str]
 
-        retval = cast(TemplateIntersectable, make_template_definition(
+        retval = cast(type[TemplateIntersectable], make_template_definition(
             FakeTemplate,
             dataclass_kwargs={},
             template_resource_locator=object(),
             template_config=fake_template_config))
         signature = retval._templatey_signature
 
-        assert len(signature.vars_) == 1
-        assert 'bar' in signature.vars_
+        assert len(signature.var_names) == 1
+        assert 'bar' in signature.var_names
 
     def test_content_extraction(self):
         """Fields declared with Content[...] must be correctly detected
@@ -217,15 +428,15 @@ class TestMakeTemplateDefinition:
             bar: Var[str]
             baz: Content[str]
 
-        retval = cast(TemplateIntersectable, make_template_definition(
+        retval = cast(type[TemplateIntersectable], make_template_definition(
             FakeTemplate,
             dataclass_kwargs={},
             template_resource_locator=object(),
             template_config=fake_template_config))
         signature = retval._templatey_signature
 
-        assert len(signature.content) == 1
-        assert 'baz' in signature.content
+        assert len(signature.content_names) == 1
+        assert 'baz' in signature.content_names
 
     def test_is_dataclass(self):
         """The template maker must also convert the class to a

@@ -64,7 +64,10 @@ class FuncExecutionResult:
         if self.retval is not None:
             for item in self.retval:
                 if is_template_instance(item):
-                    # Hmm, somehow the TypeIs isn't working
+                    # This doesn't fully work; because of the missing
+                    # intersection type, there's nothing linking the xable that
+                    # this checks for with the params instance that the type
+                    # expects us to yield back
                     yield item  # type: ignore
 
 
@@ -108,8 +111,8 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
             signature=template_xable._templatey_signature,
             provenance=TemplateProvenance((
                 TemplateProvenanceNode(
-                    parent_slot_key='',
-                    parent_slot_index=-1,
+                    encloser_slot_key='',
+                    encloser_slot_index=-1,
                     instance_id=id(template_instance),
                     instance=template_instance),)),
             instance=template_instance,
@@ -208,8 +211,8 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                         signature=slot_instance._templatey_signature,
                         provenance=TemplateProvenance(
                             (*render_node.provenance, TemplateProvenanceNode(
-                                parent_slot_key=next_part.name,
-                                parent_slot_index=next(provenance_counter),
+                                encloser_slot_key=next_part.name,
+                                encloser_slot_index=next(provenance_counter),
                                 instance_id=id(slot_instance),
                                 instance=slot_instance))),
                         prerenderers=slot_instance._templatey_prerenderers)
@@ -284,8 +287,8 @@ class _RenderContext:
         # check for membership, so we might as well keep it a list
         template_backlog_local_roots = [root_template]
         template_backlog_included_classes = set(
-            root_template_xable._templatey_signature.included_template_classes)
-        template_backlog_included_classes.add(type(root_template))
+            root_template_xable
+            ._templatey_signature.included_template_classes)
         function_backlog = []
         template_preload = self.template_preload
         function_precall = self.function_precall
@@ -389,8 +392,6 @@ class _RenderContext:
                     template_backlog_included_classes.update(
                         injected_xable._templatey_signature
                         .included_template_classes)
-                    template_backlog_included_classes.add(
-                        type(injected_template))
 
 
 type _PrecallExecutionRequest = tuple[
@@ -563,8 +564,8 @@ def _build_render_stack_extension(
                     signature=template_xable._templatey_signature,
                     provenance=TemplateProvenance((
                         TemplateProvenanceNode(
-                            parent_slot_key='',
-                            parent_slot_index=-1,
+                            encloser_slot_key='',
+                            encloser_slot_index=-1,
                             instance_id=id(func_result_part),
                             instance=func_result_part),)),
                     instance=func_result_part,

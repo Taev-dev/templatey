@@ -301,9 +301,9 @@ class RenderEnvironment:
         raises MismatchedTemplateSignature.
         """
         template_signature = template_class._templatey_signature
-        variable_names = set(template_signature.vars_)
-        slot_names = set(template_signature.slots)
-        content_names = set(template_signature.content)
+        variable_names = template_signature.var_names
+        slot_names = template_signature.slot_names
+        content_names = template_signature.content_names
 
         if strict_mode:
             variables_mismatch = (
