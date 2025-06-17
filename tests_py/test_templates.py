@@ -330,6 +330,7 @@ class TestMakeTemplateDefinition:
             bar: Slot[Bar]  # type: ignore
         foo_xable = cast(TemplateIntersectable, Foo)
 
+        assert not forward_ref_registry
         assert len(retval._templatey_signature._pending_ref_lookup) == 0
         assert not forward_ref_registry
         assert Foo in foo_xable._templatey_signature._slot_tree_lookup

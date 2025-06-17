@@ -1055,7 +1055,7 @@ class TemplateSignature:
             # Remember that we're in the middle of constructing the signature
             # for a new template class. If the nested class (from the slot) was
             # depending on the class we're still constructing, it hasn't yet
-            # been updated with the resovlved class. Therefore, instead of
+            # been updated with the resolved class. Therefore, instead of
             # needing to come back and fix up any recursive forward refs later,
             # we can simply do them right here, right now.
             # Also note that we'll NEVER have an existing pending tree for
@@ -1071,6 +1071,7 @@ class TemplateSignature:
                     resolved_cls=template_cls,
                     resolved_slot_tree_lookup=slot_tree_lookup,
                     resolved_pending_ref_lookup=pending_ref_lookup)
+                continue
 
             # Remember that we're simply transforming the existing pending ref
             # tree from the nested slot into a pending ref tree on the
