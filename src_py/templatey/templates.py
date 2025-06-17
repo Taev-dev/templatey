@@ -18,6 +18,7 @@ from collections.abc import Iterator
 from collections.abc import Mapping
 from collections.abc import MutableMapping
 from collections.abc import Sequence
+from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import copy
 from dataclasses import _MISSING_TYPE
@@ -28,6 +29,7 @@ from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import fields
 from itertools import tee as tee_iterable
+from random import Random
 from textwrap import dedent
 from types import EllipsisType
 from types import FrameType
@@ -73,6 +75,18 @@ logger = logging.getLogger(__name__)
 _PENDING_FORWARD_REFS: ContextVar[
     dict[ForwardRefLookupKey, set[TemplateClass]]] = ContextVar(
         '_PENDING_FORWARD_REFS', default=defaultdict(set))  # noqa: B039
+
+# Note: we don't need cryptographically secure IDs here, so let's preserve
+# entropy (might also be faster, dunno). Also note: the only reason we're
+# using a contextvar here is so that we can theoretically replace it with
+# a deterministic seed during testing (if we run into flakiness due to
+# non-determinism)
+_ID_PRNG: ContextVar[Random] = ContextVar('_ID_PRNG', default=Random())  # noqa: B039, S311
+_ID_BITS = 128
+# This is used by ``anchor_closure_scope`` to assign a scope ID to templates.
+# It's used for all templates, but will only be non-null inside a closure.
+_CURRENT_SCOPE_ID: ContextVar[int | None] = ContextVar(
+    '_CURRENT_SCOPE_ID', default=None)
 
 
 # Technically, these should use the TemplateIntersectable from templates.py,
@@ -479,6 +493,50 @@ class TemplateProvenance(tuple[TemplateProvenanceNode]):
         return value
 
 
+@contextmanager
+def anchor_closure_scope():
+    """We strongly recommend against defining templates within a
+    closure, as it can cause a number of fragility issues, and just
+    generally makes less sense than defining templates at the module
+    level. However, if you absolutely must create a new template within
+    a closure, you must use ``anchor_closure_scope`` to give the
+    templates a known closure scope. Can be used either as a decorator
+    or a context:
+
+    > Decorator usage
+    __embed__: 'code/python'
+        @anchor_closure_scope()
+        def my_func():
+            # template definition goes here
+            ...
+
+    > Context manager usage
+    __embed__: 'code/python'
+        def my_other_func():
+            with anchor_closure_scope():
+                # template definition goes here
+                ...
+    """
+    token = _CURRENT_SCOPE_ID.set(_create_templatey_id())
+    try:
+        yield
+    finally:
+        _CURRENT_SCOPE_ID.reset(token)
+
+
+def _create_templatey_id() -> int:
+    """Templatey IDs are unique identifiers (theoretically, absent
+    birthday collisions) that we currently use in two places:
+    ++  as a scope ID, which is used when defining templates in closures
+    ++  for giving slot tree nodes a unique reference target for
+        recursion loops while copying and merging, which is more robust
+        than ``id(target)`` and can be transferred via dataclass field
+        into cloned/copied/merged nodes.
+    """
+    prng = _ID_PRNG.get()
+    return prng.getrandbits(_ID_BITS)
+
+
 @dataclass(frozen=True, slots=True)
 class ForwardRefLookupKey:
     """We use this to find all possible ForwardRefLookupKey instances
@@ -517,7 +575,7 @@ class ForwardRefLookupKey:
     """
     module: str
     name: str
-    scope: FrameType | None
+    scope_id: int | None
 
 
 # Note: the ordering here is to emphasize the fact that the slot
@@ -595,6 +653,8 @@ class _SlotTreeNode[T: _SlotTreeNode](list[_SlotTreeRoute[T]]):
     # continues on to a subtree, and one which ends here with the target
     # instance
     is_terminus: bool = False
+
+    id_: int = field(default_factory=_create_templatey_id)
 
     # We use this to make the logic cleaner when merging trees, but we want
     # the faster performance of the tuple when actually traversing the tree
@@ -1300,28 +1360,19 @@ def _extract_template_class_locals() -> dict[str, Any] | None:
         return upmodule_frame.f_locals
 
 
-def _extract_frame_scope() -> FrameType | None:
+def _extract_frame_scope_id() -> int | None:
     """When templates are created from inside a closure (ex, during
     testing, where this is extremely common), and forward references
     are used, we need a way to differentiate between identically-named
     templates within different functions of the same module (or the
-    toplevel of the module). We do this by including the frame object
-    on the ForwardRefLookupKey whenever we're in a closure. This
-    method relies upon ``inspect`` to extract it.
+    toplevel of the module).
 
-    Note that this can be very sensitive to where, exactly, you put it
-    within the templatey code. Always put it as close as possible to
-    the public API method, so that the first frame from another module
-    coincides with the call to decorate a template class.
+    We do this via a dedicated decorator/context manager,
+    ``anchor_closure_scope``, which creates a random value and assigns
+    it to the corresponding context var, and then is retrieved by this
+    function for use.
     """
-    upmodule_frame = _get_first_frame_from_other_module()
-    if upmodule_frame is not None:
-        frame_info = inspect.getframeinfo(upmodule_frame)
-
-        # Handily enough, cpython uses this to indicate that we're not inside
-        # a function currently, which is exactly what we need.
-        if frame_info.function != '<module>':
-            return upmodule_frame
+    return _CURRENT_SCOPE_ID.get()
 
 
 def _get_first_frame_from_other_module() -> FrameType | None:
@@ -1424,7 +1475,7 @@ def _copy_slot_tree[T: _SlotTreeNode](
     Note: if ``into_tree`` is provided, this copies inplace and returns
     the ``into_tree``. Otherwise, a new tree is created and returned.
     In both cases, we also return a lookup from
-    ``{id(old_node): copied_node}``.
+    ``{old_node.id_: copied_node}``.
     """
     copied_tree: T
     if into_tree is None:
@@ -1433,9 +1484,9 @@ def _copy_slot_tree[T: _SlotTreeNode](
         copied_tree = into_tree
         into_tree.merge_fields_only(src_tree)
 
-    # This converts ``id(old_node)`` to the new node instance; it's how we
+    # This converts ``old_node.id_`` to the new node instance; it's how we
     # implement copying reference cycles
-    transmogrified_nodes: dict[int, T] = {id(src_tree): copied_tree}
+    transmogrified_nodes: dict[int, T] = {src_tree.id_: copied_tree}
     copy_stack: list[_SlotTreeTraversalFrame[T, T]] = [_SlotTreeTraversalFrame(
         next_subtree_index=0,
         existing_subtree=copied_tree,
@@ -1453,7 +1504,7 @@ def _copy_slot_tree[T: _SlotTreeNode](
         # Do this ASAP so that we don't accidentally forget it somehow
         current_stack_frame.next_subtree_index += 1
 
-        next_subtree_id = id(next_subtree)
+        next_subtree_id = next_subtree.id_
         already_copied_node = transmogrified_nodes.get(next_subtree_id)
         # This could be either the first time we hit a recursive subtree,
         # or a non-recursive subtree.
@@ -1509,10 +1560,10 @@ def _merge_into_slot_tree[T: _SlotTreeNode](
     it was actually the expected instance type / has the expected
     function calls.
 
-    We return a lookup of ``{id(source_node): dest_node}``, which can
+    We return a lookup of ``{source_node.id_: dest_node}``, which can
     be used for recording and/or resolving pending forward refs.
     """
-    transmogrified_nodes: dict[int, T] = {id(to_merge): existing_tree}
+    transmogrified_nodes: dict[int, T] = {to_merge.id_: existing_tree}
 
     # Counterintuitive: since we're MERGING trees, the existing_subtree is
     # actually the DESTINATION, and the insertion_subtree the source!
@@ -1539,7 +1590,7 @@ def _merge_into_slot_tree[T: _SlotTreeNode](
         # because we want to use a continue statement in a second)
         current_stack_frame.next_subtree_index += 1
 
-        next_subtree_id = id(next_subtree)
+        next_subtree_id = next_subtree.id_
         already_merged_node = transmogrified_nodes.get(next_subtree_id)
 
         # For merging, we're going to handle the recursive subtree case first,
@@ -1761,10 +1812,10 @@ def _apply_insertions[T: _ConcreteSlotTreeNode | _PendingSlotTreeNode](
     """
     resulting_tree: T = type(nested_root_node)()
     resulting_tree.merge_fields_only(pending_tree)
-    # This converts ``id(old_node)`` to the new node instance; it's how we
+    # This converts ``old_node.id_`` to the new node instance; it's how we
     # implement copying reference cycles
     transmogrified_nodes: dict[int, _SlotTreeNode] = {
-        id(pending_tree): resulting_tree}
+        pending_tree.id_: resulting_tree}
 
     stack: \
         list[_SlotTreeTraversalFrame[_SlotTreeNode, _PendingSlotTreeNode]] = [
@@ -1790,7 +1841,7 @@ def _apply_insertions[T: _ConcreteSlotTreeNode | _PendingSlotTreeNode](
         # for the enclosing template, which will cull any extra links in
         # recursive reference cycles, so we don't need to worry about that
         # here.
-        next_subtree_id = id(next_subtree)
+        next_subtree_id = next_subtree.id_
         already_applied_node = transmogrified_nodes.get(next_subtree_id)
 
         # This could be either the first time we hit a recursive subtree,
@@ -1855,14 +1906,14 @@ class _SlotTreeTraversalFrame[ET: _SlotTreeNode, IT: _SlotTreeNode]:
 @dataclass(kw_only=True, slots=True)
 class _ForwardRefGeneratingNamespaceLookup(MutableMapping[str, type]):
     template_module: str
-    template_scope: FrameType | None
+    template_scope_id: int | None
     captured_refs: set[ForwardRefLookupKey] = field(default_factory=set)
 
     def __getitem__(self, key: str) -> type:
         forward_ref = ForwardRefLookupKey(
             module=self.template_module,
             name=key,
-            scope=self.template_scope)
+            scope_id=self.template_scope_id)
 
         class ForwardReferenceProxyClass:
             """When we return a forward reference, we want to retain all
@@ -1915,11 +1966,11 @@ def make_template_definition[T: type](
     cls._templatey_resource_locator = template_resource_locator
 
     template_module = cls.__module__
-    template_scope = _extract_frame_scope()
+    template_scope_id = _extract_frame_scope_id()
     template_forward_ref = ForwardRefLookupKey(
         module=template_module,
         name=cls.__name__,
-        scope=template_scope)
+        scope_id=template_scope_id)
 
     # We're prioritizing the typical case here, where the templates are defined
     # at the module toplevel, and therefore accessible within the module
@@ -1954,7 +2005,7 @@ def make_template_definition[T: type](
         # reference.
         forwardref_lookup = _ForwardRefGeneratingNamespaceLookup(
             template_module=template_module,
-            template_scope=template_scope)
+            template_scope_id=template_scope_id)
         # This is the same as the current implementation of get_type_hints
         # in cpython for classes:
         # https://github.com/python/cpython/blob/0045100ccbc3919e8990fa59bc413fe38d21b075/Lib/typing.py#L2325
@@ -2043,7 +2094,7 @@ def _resolve_forward_references(pending_template_cls: TemplateClass):
     lookup_key = ForwardRefLookupKey(
         module=pending_template_cls.__module__,
         name=pending_template_cls.__name__,
-        scope=_extract_frame_scope())
+        scope_id=_extract_frame_scope_id())
 
     forward_ref_registry = _PENDING_FORWARD_REFS.get()
     dependent_template_classes = forward_ref_registry.get(lookup_key)

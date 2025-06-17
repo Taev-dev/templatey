@@ -3,6 +3,7 @@ from collections import defaultdict
 import pytest
 
 from templatey.templates import _PENDING_FORWARD_REFS
+from templatey.templates import anchor_closure_scope
 
 
 def pytest_addoption(parser):
@@ -35,3 +36,12 @@ def clean_pending_forward_refs_registry():
         yield
     finally:
         _PENDING_FORWARD_REFS.reset(token)
+
+
+@pytest.fixture(autouse=True, scope='function')
+def apply_anchor_closure_scope():
+    """Makes sure that all test functions have a new closure scope, so
+    they work correctly with closures.
+    """
+    with anchor_closure_scope():
+        yield
