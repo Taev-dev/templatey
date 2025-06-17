@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import fields
 from functools import singledispatch
+from typing import Any
 from typing import cast
 
 from templatey.exceptions import DuplicateSlotName
@@ -511,7 +512,7 @@ def _extract_call_signature(str_signature):
 
 
 @singledispatch
-def _extract_reference_or_literal(ast_node):
+def _extract_reference_or_literal(ast_node) -> Any:
     """Gets the actual reference out of an AST node used in the call
     signature, either as an arg or the value of a kwarg.
     """
