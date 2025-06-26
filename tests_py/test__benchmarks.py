@@ -209,31 +209,37 @@ class TestBenchmarks:
         (nav item). This evaluates how quickly we can create the final
         output string from a pre-loaded template and its parameters.
         """
+        result = None
         elapsed_time = 0
         template = jinja_env.from_string(JINJA_NAV_ITEM)
         for __ in range(_ITERATION_COUNT):
             before = time.monotonic()
-            template.render(**NAV_ITEM_VARS)
+            result = template.render(**NAV_ITEM_VARS)
             after = time.monotonic()
             elapsed_time += (after - before)
         benchmark_gatherer['jinja']['simple.render'] = (
             elapsed_time / _ITERATION_COUNT)
+
+        assert result == '''<li><a href="/home" class="navbar">Home</a></li>'''
 
     def test_simple_render_templatey(self, templatey_env, benchmark_gatherer):
         """Test rendering (and only rendering) a very simple template
         (nav item). This evaluates how quickly we can create the final
         output string from a pre-loaded template and its parameters.
         """
+        result = None
         elapsed_time = 0
         template = templatey_env.load_sync(NavItem)
         for __ in range(_ITERATION_COUNT):
             template = NavItem(**NAV_ITEM_VARS)
             before = time.monotonic()
-            templatey_env.render_sync(template)
+            result = templatey_env.render_sync(template)
             after = time.monotonic()
             elapsed_time += (after - before)
         benchmark_gatherer['templatey']['simple.render'] = (
             elapsed_time / _ITERATION_COUNT)
+
+        assert result == '''<li><a href="/home" class="navbar">Home</a></li>'''
 
     def test_nested_component_load_jinja(self, jinja_env, benchmark_gatherer):
         """Benchmark loading (and only loading) a slightly more complex
@@ -271,17 +277,45 @@ class TestBenchmarks:
         This evaluates how quickly we can create the final
         output string from a pre-loaded template and its parameters.
         """
+        result = None
         elapsed_time = 0
         template = jinja_env.from_string(JINJA_PAGE_WITH_NAV)
         navigation = [
             NAV_ITEM_VARS for __ in range(PAGE_WITH_NAV_NESTED_INSTANCE_COUNT)]
         for __ in range(_ITERATION_COUNT):
             before = time.monotonic()
-            template.render(**NAV_ITEM_VARS, navigation=navigation)
+            result = template.render(**NAV_ITEM_VARS, navigation=navigation)
             after = time.monotonic()
             elapsed_time += (after - before)
         benchmark_gatherer['jinja']['nested_comp.render'] = (
             elapsed_time / _ITERATION_COUNT)
+
+        assert result == '''\
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title></title>
+</head>
+<body>
+    <ul id="navigation">
+    
+        <li><a href="/home" class="navbar">Home</a></li>
+    
+        <li><a href="/home" class="navbar">Home</a></li>
+    
+        <li><a href="/home" class="navbar">Home</a></li>
+    
+        <li><a href="/home" class="navbar">Home</a></li>
+    
+        <li><a href="/home" class="navbar">Home</a></li>
+    
+    </ul>
+
+    <h1>My Webpage</h1>
+    
+</body>
+</html>'''  # noqa: W293
 
     def test_nested_component_render_templatey(
             self, templatey_env, benchmark_gatherer):
@@ -290,6 +324,7 @@ class TestBenchmarks:
         This evaluates how quickly we can create the final
         output string from a pre-loaded template and its parameters.
         """
+        result = None
         elapsed_time = 0
         templatey_env.load_sync(PageWithNav)
         templatey_env.load_sync(NavItem)
@@ -299,11 +334,29 @@ class TestBenchmarks:
         for __ in range(_ITERATION_COUNT):
             template = PageWithNav(**PAGE_WITH_NAV_VARS, navigation=navigation)
             before = time.monotonic()
-            templatey_env.render_sync(template)
+            result = templatey_env.render_sync(template)
             after = time.monotonic()
             elapsed_time += (after - before)
         benchmark_gatherer['templatey']['nested_comp.render'] = (
             elapsed_time / _ITERATION_COUNT)
+
+        assert result == '''\
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>My benchmark page</title>
+</head>
+<body>
+    <ul id="navigation">
+    <li><a href="/home" class="navbar">Home</a></li><li><a href="/home" class="navbar">Home</a></li><li><a href="/home" class="navbar">Home</a></li><li><a href="/home" class="navbar">Home</a></li><li><a href="/home" class="navbar">Home</a></li>
+    </ul>
+
+    <h1>My Webpage</h1>
+    lorem ipsum
+</body>
+</html>
+'''  # noqa: E501
 
     def test_nested_component_with_funcs_render_jinja_sync(
             self, jinja_env, benchmark_gatherer):
@@ -312,19 +365,48 @@ class TestBenchmarks:
         This evaluates how quickly we can create the final
         output string from a pre-loaded template and its parameters.
         """
+        result = None
         elapsed_time = 0
         template = jinja_env.from_string(JINJA_PAGE_WITH_NAV_AND_FOOTER)
         navigation = [
             NAV_ITEM_VARS for __ in range(PAGE_WITH_NAV_NESTED_INSTANCE_COUNT)]
         for __ in range(_ITERATION_COUNT):
             before = time.monotonic()
-            template.render(
+            result = template.render(
                 **NAV_ITEM_VARS,
                 navigation=navigation, footer_func=sync_footer_jinja)
             after = time.monotonic()
             elapsed_time += (after - before)
         benchmark_gatherer['jinja']['nested_comp_funky.render.sync'] = (
                 elapsed_time / _ITERATION_COUNT)
+
+        assert result == '''\
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title></title>
+</head>
+<body>
+    <ul id="navigation">
+    
+        <li><a href="/home" class="navbar">Home</a></li>
+    
+        <li><a href="/home" class="navbar">Home</a></li>
+    
+        <li><a href="/home" class="navbar">Home</a></li>
+    
+        <li><a href="/home" class="navbar">Home</a></li>
+    
+        <li><a href="/home" class="navbar">Home</a></li>
+    
+    </ul>
+
+    <h1>My Webpage</h1>
+    
+    &lt;footer&gt;Thanks, world, for listening&lt;/footer&gt;
+</body>
+</html>'''  # noqa: W293
 
     def test_nested_component_with_funcs_render_templatey_sync(
             self, templatey_env, benchmark_gatherer):
@@ -333,6 +415,7 @@ class TestBenchmarks:
         This evaluates how quickly we can create the final
         output string from a pre-loaded template and its parameters.
         """
+        result = None
         elapsed_time = 0
         templatey_env.register_env_function(
             sync_footer_templatey, with_name='footer_func')
@@ -346,11 +429,30 @@ class TestBenchmarks:
             template = PageWithNavAndFooter(
                 **PAGE_WITH_NAV_VARS, navigation=navigation)
             before = time.monotonic()
-            templatey_env.render_sync(template)
+            result = templatey_env.render_sync(template)
             after = time.monotonic()
             elapsed_time += (after - before)
         benchmark_gatherer['templatey']['nested_comp_funky.render.sync'] = (
                 elapsed_time / _ITERATION_COUNT)
+
+        assert result == '''\
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>My benchmark page</title>
+</head>
+<body>
+    <ul id="navigation">
+    <li><a href="/home" class="navbar">Home</a></li><li><a href="/home" class="navbar">Home</a></li><li><a href="/home" class="navbar">Home</a></li><li><a href="/home" class="navbar">Home</a></li><li><a href="/home" class="navbar">Home</a></li>
+    </ul>
+
+    <h1>My Webpage</h1>
+    lorem ipsum
+    &lt;footer&gt;Thanks, world, for listening&lt;/footer&gt;
+</body>
+</html>
+'''  # noqa: E501
 
     @pytest.mark.anyio
     async def test_nested_component_with_funcs_render_jinja_async(
@@ -360,13 +462,14 @@ class TestBenchmarks:
         This evaluates how quickly we can create the final
         output string from a pre-loaded template and its parameters.
         """
+        result = None
         elapsed_time = 0
         template = jinja_env.from_string(JINJA_PAGE_WITH_NAV_AND_FOOTER)
         navigation = [
             NAV_ITEM_VARS for __ in range(PAGE_WITH_NAV_NESTED_INSTANCE_COUNT)]
         for __ in range(_ITERATION_COUNT):
             before = time.monotonic()
-            await template.render_async(
+            result = await template.render_async(
                 **NAV_ITEM_VARS,
                 navigation=navigation, footer_func=async_footer_jinja)
             after = time.monotonic()
@@ -374,6 +477,34 @@ class TestBenchmarks:
         benchmark_gatherer['jinja'][
             f'nested_comp_funky.render.{anyio_backend_name}'] = (
                 elapsed_time / _ITERATION_COUNT)
+
+        assert result == '''\
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title></title>
+</head>
+<body>
+    <ul id="navigation">
+    
+        <li><a href="/home" class="navbar">Home</a></li>
+    
+        <li><a href="/home" class="navbar">Home</a></li>
+    
+        <li><a href="/home" class="navbar">Home</a></li>
+    
+        <li><a href="/home" class="navbar">Home</a></li>
+    
+        <li><a href="/home" class="navbar">Home</a></li>
+    
+    </ul>
+
+    <h1>My Webpage</h1>
+    
+    &lt;footer&gt;Thanks, world, for listening&lt;/footer&gt;
+</body>
+</html>'''  # noqa: W293
 
     @pytest.mark.anyio
     async def test_nested_component_with_funcs_render_templatey_async(
@@ -383,6 +514,7 @@ class TestBenchmarks:
         This evaluates how quickly we can create the final
         output string from a pre-loaded template and its parameters.
         """
+        result = None
         elapsed_time = 0
         templatey_env.register_env_function(
             async_footer_templatey, with_name='footer_func')
@@ -396,9 +528,28 @@ class TestBenchmarks:
             template = PageWithNavAndFooter(
                 **PAGE_WITH_NAV_VARS, navigation=navigation)
             before = time.monotonic()
-            await templatey_env.render_async(template)
+            result = await templatey_env.render_async(template)
             after = time.monotonic()
             elapsed_time += (after - before)
         benchmark_gatherer['templatey'][
             f'nested_comp_funky.render.{anyio_backend_name}'] = (
                 elapsed_time / _ITERATION_COUNT)
+
+        assert result == '''\
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <title>My benchmark page</title>
+</head>
+<body>
+    <ul id="navigation">
+    <li><a href="/home" class="navbar">Home</a></li><li><a href="/home" class="navbar">Home</a></li><li><a href="/home" class="navbar">Home</a></li><li><a href="/home" class="navbar">Home</a></li><li><a href="/home" class="navbar">Home</a></li>
+    </ul>
+
+    <h1>My Webpage</h1>
+    lorem ipsum
+    &lt;footer&gt;Thanks, world, for listening&lt;/footer&gt;
+</body>
+</html>
+'''  # noqa: E501
