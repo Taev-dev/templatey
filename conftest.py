@@ -2,8 +2,8 @@ from collections import defaultdict
 
 import pytest
 
-from templatey.templates import _PENDING_FORWARD_REFS
-from templatey.templates import anchor_closure_scope
+from templatey._forwardrefs import PENDING_FORWARD_REFS
+from templatey._forwardrefs import anchor_closure_scope
 
 
 def pytest_addoption(parser):
@@ -31,11 +31,11 @@ def clean_pending_forward_refs_registry():
     functions themselves. Templates defined at a test module level
     will be unaffected.
     """
-    token = _PENDING_FORWARD_REFS.set(defaultdict(set))
+    token = PENDING_FORWARD_REFS.set(defaultdict(set))
     try:
         yield
     finally:
-        _PENDING_FORWARD_REFS.reset(token)
+        PENDING_FORWARD_REFS.reset(token)
 
 
 @pytest.fixture(autouse=True, scope='function')

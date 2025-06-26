@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import FrozenInstanceError
 from dataclasses import is_dataclass
 from typing import cast
 from typing import get_type_hints
+from unittest.mock import MagicMock
 
 import pytest
 
-from templatey.templates import _PENDING_FORWARD_REFS
+from templatey._forwardrefs import PENDING_FORWARD_REFS
 from templatey.templates import Content
 from templatey.templates import Slot
 from templatey.templates import TemplateIntersectable
@@ -28,7 +30,10 @@ class TestIsTemplateClass:
 
         # Quick and dirty. This will break if we add anything that isn't a
         # class var to the TemplateIntersectable class.
-        for key in get_type_hints(TemplateIntersectable):
+        for key in get_type_hints(
+            TemplateIntersectable,
+            localns=defaultdict(MagicMock)
+        ):
             setattr(FakeTemplate, key, object())
 
         assert is_template_class(FakeTemplate)
@@ -47,7 +52,10 @@ class TestIsTemplateInstance:
 
         # Quick and dirty. This will break if we add anything that isn't a
         # class var to the TemplateIntersectable class.
-        for key in get_type_hints(TemplateIntersectable):
+        for key in get_type_hints(
+            TemplateIntersectable,
+            localns=defaultdict(MagicMock)
+        ):
             setattr(FakeTemplate, key, object())
 
         instance = FakeTemplate()
@@ -151,7 +159,7 @@ class TestMakeTemplateDefinition:
             retval._templatey_signature._pending_ref_lookup))
         assert pending_ref.name == 'Foo'
 
-        forward_ref_registry = _PENDING_FORWARD_REFS.get()
+        forward_ref_registry = PENDING_FORWARD_REFS.get()
         assert len(forward_ref_registry) == 1
         assert pending_ref in forward_ref_registry
         assert forward_ref_registry[pending_ref] == {Bar}
@@ -191,7 +199,7 @@ class TestMakeTemplateDefinition:
             retval._templatey_signature._pending_ref_lookup))
         assert pending_ref.name == 'Foo'
 
-        forward_ref_registry = _PENDING_FORWARD_REFS.get()
+        forward_ref_registry = PENDING_FORWARD_REFS.get()
         assert len(forward_ref_registry) == 1
         assert pending_ref in forward_ref_registry
         assert forward_ref_registry[pending_ref] == {Bar}
@@ -259,7 +267,7 @@ class TestMakeTemplateDefinition:
             retval._templatey_signature._pending_ref_lookup))
         assert pending_ref.name == 'Foo'
 
-        forward_ref_registry = _PENDING_FORWARD_REFS.get()
+        forward_ref_registry = PENDING_FORWARD_REFS.get()
         assert len(forward_ref_registry) == 1
         assert pending_ref in forward_ref_registry
         assert forward_ref_registry[pending_ref] == {Bar, Baz}
@@ -289,7 +297,7 @@ class TestMakeTemplateDefinition:
             template_config=fake_template_config))
         assert is_template_class(retval)
         assert len(retval._templatey_signature._pending_ref_lookup) == 0
-        forward_ref_registry = _PENDING_FORWARD_REFS.get()
+        forward_ref_registry = PENDING_FORWARD_REFS.get()
         assert not forward_ref_registry
         assert Foo in retval._templatey_signature._slot_tree_lookup
 
@@ -317,7 +325,7 @@ class TestMakeTemplateDefinition:
             retval._templatey_signature._pending_ref_lookup))
         assert pending_ref.name == 'Foo'
 
-        forward_ref_registry = _PENDING_FORWARD_REFS.get()
+        forward_ref_registry = PENDING_FORWARD_REFS.get()
         assert len(forward_ref_registry) == 1
         assert pending_ref in forward_ref_registry
         assert forward_ref_registry[pending_ref] == {Bar}
