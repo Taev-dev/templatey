@@ -402,6 +402,93 @@ class TestMakeTemplateDefinition:
         assert len(signature.slot_names) == 1
         assert 'foo' in signature.slot_names
 
+    def test_slot_multiples_union(self):
+        """Templates with multiple slots of the same union type must be
+        correctly defined, with both separate routes in the slot tree.
+        """
+        class FakeTemplate:
+            foo1: Slot[Foo | Bar | Baz]
+            foo2: Slot[Foo | Bar | Baz]
+
+        @template(fake_template_config, object())
+        class Foo:
+            foo: Var[str]
+
+        @template(fake_template_config, object())
+        class Bar:
+            foo: Var[str]
+
+        @template(fake_template_config, object())
+        class Baz:
+            foo: Var[str]
+
+        retval = cast(type[TemplateIntersectable], make_template_definition(
+            FakeTemplate,
+            dataclass_kwargs={},
+            template_resource_locator=object(),
+            template_config=fake_template_config))
+        signature = retval._templatey_signature
+
+        assert len(signature.slot_names) == 2
+        assert 'foo1' in signature.slot_names
+        assert 'foo2' in signature.slot_names
+        root_node = signature._slot_tree_lookup[Foo]
+        assert root_node.has_route_for('foo1', Foo)
+        assert root_node.has_route_for('foo2', Foo)
+
+    def test_slot_multiples_recursion(self):
+        """Templates with multiple slots of the same recursive type must
+        be correctly defined, with both separate routes in the slot
+        tree.
+        """
+        @template(fake_template_config, object())
+        class Foo:
+            bar_or_baz: Slot[Bar | Baz]
+
+        @template(fake_template_config, object())
+        class Bar:
+            foo: Slot[Foo]
+
+        @template(fake_template_config, object())
+        class Baz:
+            value: Var[str]
+
+        @template(fake_template_config, object())
+        class FakeTemplate:
+            slot1: Slot[Baz | Foo | Bar]
+            slot2: Slot[Baz | Foo | Bar]
+
+        retval = cast(type[TemplateIntersectable], FakeTemplate)
+        signature = retval._templatey_signature
+
+        assert len(signature.slot_names) == 2
+        assert 'slot1' in signature.slot_names
+        assert 'slot2' in signature.slot_names
+        foo_root_node = signature._slot_tree_lookup[Foo]
+        assert foo_root_node.has_route_for('slot1', Foo)
+        assert foo_root_node.has_route_for('slot2', Foo)
+        assert foo_root_node.has_route_for('slot1', Bar)
+        assert foo_root_node.has_route_for('slot2', Bar)
+        # Note: we're checking for nested descendants, so yes, the fact that
+        # we're looking in FakeTemplate._templatey_signature is deliberate
+        bar_root_node = signature._slot_tree_lookup[Bar]
+        assert bar_root_node.has_route_for('slot1', Foo)
+        assert bar_root_node.has_route_for('slot2', Foo)
+        assert bar_root_node.has_route_for('slot1', Bar)
+        assert bar_root_node.has_route_for('slot2', Bar)
+        # Note: we're checking for nested descendants, so yes, the fact that
+        # we're looking in FakeTemplate._templatey_signature is deliberate
+        baz_root_node = signature._slot_tree_lookup[Baz]
+        assert baz_root_node.has_route_for('slot1', Foo)
+        assert baz_root_node.has_route_for('slot2', Foo)
+        assert baz_root_node.has_route_for('slot1', Bar)
+        assert baz_root_node.has_route_for('slot2', Bar)
+        assert baz_root_node.has_route_for('slot1', Baz)
+        assert baz_root_node.has_route_for('slot2', Baz)
+
+        print(signature.stringify_all())
+        assert False
+
     def test_var_extraction(self):
         """Fields declared with Var[...] must be correctly detected
         and stored on the class.

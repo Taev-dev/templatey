@@ -102,6 +102,12 @@ type Content[T] = Annotated[
     InterfaceAnnotation(InterfaceAnnotationFlavor.CONTENT)]
 
 
+type _SlotAnnotation = (
+    TemplateClass
+    | UnionType
+    | type[ForwardReferenceProxyClass])
+
+
 class TemplateIntersectable(Protocol):
     """This is the actual template protocol, which we would
     like to intersect with the TemplateParamsInstance, but cannot.
@@ -658,8 +664,8 @@ class _SlotTreeNode[T: _SlotTreeNode](list[_SlotTreeRoute[T]]):
 
     # We use this to make the logic cleaner when merging trees, but we want
     # the faster performance of the tuple when actually traversing the tree
-    _routes_by_slot_path: \
-        dict[tuple[str, TemplateClass], _SlotTreeRoute[T]] = field(init=False)
+    _index_by_slot_path: dict[tuple[str, TemplateClass], int] = field(
+            init=False, repr=False)
 
     def __post_init__(
             self,
@@ -671,10 +677,14 @@ class _SlotTreeNode[T: _SlotTreeNode](list[_SlotTreeRoute[T]]):
         else:
             list.__init__(self, routes)
 
-        self._routes_by_slot_path = {
-            route.slot_path: route for route in self}
+        self._index_by_slot_path = {
+            route.slot_path: index for index, route in enumerate(self)}
 
-    def empty_clone(self) -> Self:
+    def empty_clone(
+            self,
+            *,
+            fields_to_skip: set[str] | frozenset[str] = frozenset()
+            ) -> Self:
         """This creates a clone of the node without any routes. Useful
         for merging and copying, where you need to do some manual
         transform of the content.
@@ -685,25 +695,33 @@ class _SlotTreeNode[T: _SlotTreeNode](list[_SlotTreeRoute[T]]):
         """
         kwargs = {}
         for dc_field in fields(self):
-            if dc_field.init:
+            if dc_field.init and dc_field.name not in fields_to_skip:
                 # Note: the copy here is important for any mutable values,
                 # notably the insertion_slot_names.
                 kwargs[dc_field.name] = copy(getattr(self, dc_field.name))
 
         return type(self)(**kwargs)
 
-    def merge_fields_only(self, other: _SlotTreeNode):
+    def merge_fields_only(
+            self,
+            other: _SlotTreeNode,
+            *,
+            fields_to_skip: set[str] | frozenset[str] = frozenset()):
         """Updates the current node, merging in all non-init field
         values from other, using |=. Only merges values that exist on
         the current node, allowing for transformation between pending
         and concrete node types.
+
+        Leaves the ID of the current node unchanged.
         """
+        # Always skip ``id_`` -- always preserve the original ID!
+        fields_to_skip = fields_to_skip | {'id_'}
         missing = object()
 
         for dc_field in fields(self):
-            if dc_field.init:
+            if dc_field.init and dc_field.name not in fields_to_skip:
                 current_value = getattr(self, dc_field.name)
-                other_value = getattr(self, dc_field.name, missing)
+                other_value = getattr(other, dc_field.name, missing)
 
                 if other_value is not missing:
                     setattr(
@@ -726,50 +744,185 @@ class _SlotTreeNode[T: _SlotTreeNode](list[_SlotTreeRoute[T]]):
         return self.is_recursive
 
     def append(self, route: _SlotTreeRoute[T]):
+        """This has slightly different semantics to normal list
+        appending if you're trying to append a duplicate slot path:
+        ++  if it's identical to the existing path (ie, it targets the
+            same node), we do nothing
+        ++  if it's not identical, we error
+        """
         slot_path = (route[0], route[1])
-        if slot_path in self._routes_by_slot_path:
-            raise ValueError(
-                'Templatey internal error: attempt to append duplicate slot '
-                + 'name for same slot type! Please search for / report issue '
-                + 'to github along with a traceback.')
+        slot_index = self._index_by_slot_path.get(slot_path)
+
+        if slot_index is not None:
+            if self[slot_index].subtree is route.subtree:
+                return
+            else:
+                raise ValueError(
+                    'Templatey internal error: attempt to append duplicate '
+                    + 'slot name for same slot type, but a different subtree! '
+                    + 'Please search for / report issue to github along with '
+                    + 'a traceback.')
 
         list.append(self, route)
-        self._routes_by_slot_path[slot_path] = route
-
-    def extend(self, routes: Iterable[_SlotTreeRoute[T]]):
-        routes, routes_copy_1, routes_copy_2 = tee_iterable(routes, 3)
-
-        # The slightly awkward sequencing here is so that it's an atomic
-        # operation: check everything first, then update.
-        # Not strictly necessary, but nice in the "be kind, rewind" kind of
-        # way
-        if any(
-            (route_copy[0], route_copy[1]) in self._routes_by_slot_path
-            for route_copy in routes_copy_1
-        ):
-            raise ValueError(
-                'Templatey internal error: attempt to append duplicate slot '
-                + 'name! Please search for / report issue to github along '
-                + 'with a traceback.')
-
-        list.extend(self, routes)
-        self._routes_by_slot_path.update({
-            (route_copy[0], route_copy[1]): route_copy
-            for route_copy in routes_copy_2})
+        self._index_by_slot_path[slot_path] = len(self) - 1
 
     def has_route_for(
             self,
             slot_name: str,
             slot_type: TemplateClass
             ) -> bool:
-        return (slot_name, slot_type) in self._routes_by_slot_path
+        return (slot_name, slot_type) in self._index_by_slot_path
 
     def get_route_for(
             self,
             slot_name: str,
             slot_type: TemplateClass
             ) -> _SlotTreeRoute[T]:
-        return self._routes_by_slot_path[(slot_name, slot_type)]
+        return self[self._index_by_slot_path[(slot_name, slot_type)]]
+
+    def rewrite_route_for(
+            self,
+            slot_name: str,
+            slot_type: TemplateClass,
+            new_route: _SlotTreeRoute[T]
+            ) -> None:
+        dest_index = self._index_by_slot_path[(slot_name, slot_type)]
+        list.__setitem__(self, dest_index, new_route)
+
+    def stringify(
+            self,
+            *,
+            depth=0,
+            _encountered_ids: frozenset[int] = frozenset()
+            ) -> str:
+        """Creates a pretty-print-style string representation of the
+        node and all its nested nodes, recursively.
+        """
+        indentation = '    ' * depth
+
+        to_join = []
+        for dc_field in fields(self):
+            if dc_field.init:
+                field_name = dc_field.name
+                to_join.append(
+                    f'{indentation}{field_name}: {getattr(self, field_name)}')
+
+        if self.id_ in _encountered_ids:
+            to_join.append(
+                f'{indentation}... Recursion detected; omitting subtrees.')
+
+        else:
+            for route in self:
+                to_join.append(
+                    f'{indentation}++  {route[0:2]}')
+                to_join.append(route[2].stringify(
+                    depth=depth + 1,
+                    _encountered_ids=_encountered_ids | {self.id_}))
+
+        return '\n'.join(to_join)
+
+    def is_equivalent(
+            self,
+            other: _SlotTreeNode,
+            *,
+            _previous_encounters: dict[int, int] | None = None
+            ) -> bool:
+        """This compares two slot tree nodes recursively, ignoring IDs.
+        If they are otherwise identical -- including the structure of
+        any recursive loops -- returns True.
+
+        Note that this is optimized for maintainability and not
+        performance. Its primary intended use is in testing.
+        """
+        previous_encounters: dict[int, int]
+        if _previous_encounters is None:
+            previous_encounters = {}
+        else:
+            # Note that the copy here is important because otherwise we'd be
+            # mutating state even in other tree branches which might not have
+            # encountered us (since we reuse this in the recursive case)
+            previous_encounters = {**_previous_encounters}
+
+        # These two cases are trivial: first, if the types aren't the same,
+        # they're not equivalent, period. Second, if we already encountered
+        # that node's ID, that means we're in a recursive loop, and the two
+        # IDs must match.
+        if type(self) is not type(other):
+            return False
+        if other.id_ in previous_encounters:
+            return previous_encounters[other.id_] == self.id_
+
+        # First check all the fields, since this should in theory be quick
+        fields_match: bool = True
+        for dc_field in fields(self):
+            if dc_field.init and dc_field.name != 'id_':
+                fields_match &= (
+                    getattr(self, dc_field.name)
+                    == getattr(other, dc_field.name))
+        if not fields_match:
+            return False
+
+        # Now make sure the routes are the same. This lets us simplify the
+        # recursive comparison logic; we don't need any checks to make sure
+        # that there weren't any leftover routes on either self or other.
+        # It also lets us short-circuit without recursion if they don't match,
+        # but that's not the primary motivation behind it.
+        self_routes = set(self._index_by_slot_path)
+        other_routes = set(other._index_by_slot_path)
+        if self_routes != other_routes:
+            return False
+
+        # Now finally we're getting to recursive territory.
+        previous_encounters[other.id_] = self.id_
+        for slot_path in self._index_by_slot_path:
+            self_index = self._index_by_slot_path[slot_path]
+            self_subtree = self[self_index].subtree
+            other_index = self._index_by_slot_path[slot_path]
+            other_subtree = other[other_index].subtree
+
+            # Recursion is glorious as long as you don't need to worry about
+            # performance! Too bad we can't use it during rendering (because
+            # it's way too slow)
+            if not self_subtree.is_equivalent(
+                other_subtree,
+                _previous_encounters=previous_encounters
+            ):
+                return False
+
+        return True
+
+    def extend(self, routes: Iterable[_SlotTreeRoute[T]]):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def __delitem__(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def __setitem__(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def clear(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def copy(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def insert(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def pop(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def remove(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def reverse(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def __imul__(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
+
+    def __iadd__(self, *args, **kwargs):
+        raise ZeroDivisionError('Templatey internal error: not implemented!')
 
 
 type _ConcreteSlotTreeNode = _SlotTreeNode[_ConcreteSlotTreeNode]
@@ -870,10 +1023,7 @@ class TemplateSignature:
     def new(
             cls,
             template_cls: type,
-            slots: dict[str,
-                TemplateClass
-                | UnionType
-                | type[ForwardReferenceProxyClass]],
+            slots: dict[str, _SlotAnnotation],
             vars_: dict[str, type | type[ForwardReferenceProxyClass]],
             content: dict[str, type | type[ForwardReferenceProxyClass]],
             *,
@@ -896,85 +1046,23 @@ class TemplateSignature:
         tree_wip = defaultdict(_SlotTreeNode)
         pending_ref_lookup: \
             dict[ForwardRefLookupKey, _PendingSlotTreeContainer] = {}
-        for slot_name, slot_annotation in slots.items():
-            cls._extend_wip_slot_and_ref_trees(
-                template_cls,
-                forward_ref_lookup_key,
-                slot_name,
-                slot_annotation,
-                slot_tree_lookup=tree_wip,
-                pending_ref_lookup=pending_ref_lookup)
-        tree_wip.default_factory = None
 
-        return cls(
-            _forward_ref_lookup_key=forward_ref_lookup_key,
-            template_cls_ref=ref(template_cls),
-            slot_names=slot_names,
-            var_names=var_names,
-            content_names=content_names,
-            _slot_tree_lookup=tree_wip,
-            _pending_ref_lookup=pending_ref_lookup)
+        concrete_slot_defs, pending_ref_defs = cls._normalize_slot_defs(
+            slots.items())
 
-    @classmethod
-    def _extend_wip_slot_and_ref_trees(
-            cls,
-            # This is used as a recursion guard. If we have a simple recursion,
-            # there (somewhat surprisingly) isn't a forward ref at all when
-            # getting the type hints, but instead, the actual class. But we're
-            # still in the middle of populating its xable attributes, so we
-            # need to short circuit it.
-            template_cls: type,
-            template_forward_ref_lookup_key: ForwardRefLookupKey,
-            slot_name: str,
-            slot_annotation:
-                TemplateClass
-                | UnionType
-                | type[ForwardReferenceProxyClass],
-            *,
-            slot_tree_lookup:
-                defaultdict[TemplateClass, _ConcreteSlotTreeNode],
-            pending_ref_lookup:
-                dict[ForwardRefLookupKey, _PendingSlotTreeContainer]
-            ) -> None:
-        """Builds the slot tree for a single slot on a template class.
-
-        Keep in mind that child slots might themselves include pending
-        trees, so we can't infer based on the annotation type whether
-        or not the result will include them or not.
-        """
-        slot_types: Collection[
-            TemplateClass
-            | type[ForwardReferenceProxyClass]]
-
-        if isinstance(slot_annotation, UnionType):
-            slot_types = slot_annotation.__args__
-        else:
-            slot_types = (slot_annotation,)
-
-        for slot_type in slot_types:
-            if is_forward_reference_proxy(slot_type):
-                forward_ref = slot_type.REFERENCE_TARGET
-
-                existing_pending_tree = pending_ref_lookup.get(forward_ref)
-                if existing_pending_tree is None:
-                    dest_insertion = _PendingSlotTreeNode(
-                        insertion_slot_names={slot_name})
-                    pending_ref_lookup[forward_ref] = (
-                        _PendingSlotTreeContainer(
-                            pending_slot_type=forward_ref,
-                            pending_root_node=dest_insertion))
-
-                else:
-                    (
-                        existing_pending_tree
-                        .pending_root_node
-                        .insertion_slot_names.add(slot_name))
-
+        # Note that order between concrete_slot_defs and pending_ref_defs
+        # DOES matter here. Concrete has to come first, because we need to
+        # discover all reference loops back to the template class before
+        # we can fully define the pending trees.
+        for slot_name, slot_type in concrete_slot_defs:
             # In the simple recursion case -- a template defines a slot of its
             # own class -- we can immediately create a reference loop without
-            # needing a forward ref.
-            elif slot_type is template_cls:
-                recursive_slot_tree = slot_tree_lookup[slot_type]
+            # any pomp nor circumstance.
+            # Also: yes, this is resolved at annotation time, and not a forward
+            # ref!
+            if slot_type is template_cls:
+                recursive_slot_tree = tree_wip[slot_type]
+                recursive_slot_tree.is_terminus = True
                 recursive_slot_tree.is_recursive = True
                 recursive_slot_route = _SlotTreeRoute.new(
                     slot_name,
@@ -985,129 +1073,113 @@ class TemplateSignature:
             # Remember that we expanded the union already, so this is
             # guaranteed to be a single concrete ``slot_type``.
             else:
-                cls._extend_wip_slot_and_ref_trees_for_concrete_slot_type(
+                offset_tree = _PendingSlotTreeNode(
+                    insertion_slot_names={slot_name})
+                _update_encloser_with_trees_from_slot(
                     template_cls,
-                    slot_name,
+                    tree_wip,
+                    pending_ref_lookup,
+                    forward_ref_lookup_key,
                     slot_type,
-                    template_forward_ref_lookup_key,
-                    slot_tree_lookup=slot_tree_lookup,
-                    pending_ref_lookup=pending_ref_lookup)
+                    offset_tree,)
 
-    @staticmethod
-    def _extend_wip_slot_and_ref_trees_for_concrete_slot_type(
-            template_cls: type,
-            slot_name: str,
-            slot_type: TemplateClass,
-            encloser_forward_ref_lookup_key: ForwardRefLookupKey,
-            *,
-            slot_tree_lookup:
-                defaultdict[TemplateClass, _ConcreteSlotTreeNode],
-            pending_ref_lookup:
-                dict[ForwardRefLookupKey, _PendingSlotTreeContainer]
-            ) -> None:
-        """This carves out the slot tree extension for concrete slot
-        types into a dedicated helper function to (theoretically) make
-        testing easier. I say theoretically, because we don't yet have
-        any unit tests for this part of the code, which could make use
-        of the better organization.
-        """
-        enclosing_slot_tree = slot_tree_lookup[slot_type]
-        # Keep in mind that we're mapping out all branches of the tree
-        # here. Templates defining recursive loops will always have
-        # both a terminus and a subtree. So we don't want to overwrite
-        # anything that's already there; we simply want to note that
-        # it can also have a terminus.
-        if enclosing_slot_tree.has_route_for(slot_name, slot_type):
-            existing_route = enclosing_slot_tree.get_route_for(
-                slot_name, slot_type)
-            existing_route.subtree.is_terminus = True
-
-        else:
-            enclosing_slot_tree.append(
-                _SlotTreeRoute.new(
-                    slot_name,
-                    slot_type,
-                    _SlotTreeNode(is_terminus=True)))
-
-        slot_xable = cast(
-            type[TemplateIntersectable], slot_type)
-        nested_lookup = (
-            slot_xable._templatey_signature._slot_tree_lookup)
-        nested_pending_refs = (
-            slot_xable._templatey_signature._pending_ref_lookup)
-
-        # Note that because of the nested for loop, this will put all
-        # possible slots from the entire union on equal footing.
+        # Note that by "direct" we mean, immediate nested children of the
+        # current template_cls, for which we're constructing a signature,
+        # and NOT any nested children of nested concrete slots.
+        # These plain pending refs are very straightforward, since we don't
+        # know anything about them yet (by definition; they're forward refs!).
         for (
-            nested_slot_type, nested_slot_tree
-        ) in nested_lookup.items():
-            _merge_into_slot_tree(
-                slot_type,
-                slot_tree_lookup[nested_slot_type],
-                nested_slot_tree)
-
-        # Okay, now all we have left to do is transform all of the
-        # pending references on the nested template into pending references on
-        # the enclosing template.
-        for (
-            nested_forward_ref_key, nested_pending_slot_tree
-        ) in nested_pending_refs.items():
-            # Remember that we're in the middle of constructing the signature
-            # for a new template class. If the nested class (from the slot) was
-            # depending on the class we're still constructing, it hasn't yet
-            # been updated with the resolved class. Therefore, instead of
-            # needing to come back and fix up any recursive forward refs later,
-            # we can simply do them right here, right now.
-            # Also note that we'll NEVER have an existing pending tree for
-            # this, because we're adding it directly and immediately into
-            # the actual slot tree.
-            if nested_forward_ref_key == encloser_forward_ref_lookup_key:
-                _resolve_pending_slot_tree(
-                    nested_pending_slot_tree,
-                    slot_name,
-                    enclosing_cls=template_cls,
-                    enclosing_slot_tree_lookup=slot_tree_lookup,
-                    enclosing_pending_ref_lookup=pending_ref_lookup,
-                    resolved_cls=template_cls,
-                    resolved_slot_tree_lookup=slot_tree_lookup,
-                    resolved_pending_ref_lookup=pending_ref_lookup)
-                continue
-
-            # Remember that we're simply transforming the existing pending ref
-            # tree from the nested slot into a pending ref tree on the
-            # enclosing slot -- ie, we're not adding any additional insertion
-            # points.
+            direct_pending_slot_name,
+            direct_forward_ref_lookup_key
+        ) in pending_ref_defs:
             existing_pending_tree = pending_ref_lookup.get(
-                nested_forward_ref_key)
+                direct_forward_ref_lookup_key)
 
             if existing_pending_tree is None:
-                # Transmogrified nodes gives us a lookup from the old
-                # IDs to the new insertion nodes, allowing us to
-                # convert the references to the copy.
-                copied_tree = _copy_slot_tree(
-                    nested_pending_slot_tree.pending_root_node)
-                pending_ref_lookup[nested_forward_ref_key] = (
-                    # Remember: we already expanded the slot type
-                    # from unions!
+                dest_insertion = _PendingSlotTreeNode(
+                    insertion_slot_names={direct_pending_slot_name})
+                pending_ref_lookup[direct_forward_ref_lookup_key] = (
                     _PendingSlotTreeContainer(
-                        # Note: the additional tree layer here is because this
-                        # is a slot on the enclosing template -- we need to
-                        # descend a level!
-                        pending_root_node=_PendingSlotTreeNode(
-                            [_SlotTreeRoute.new(
-                                slot_name,
-                                # Note: this is the slot type for the CONCRETE
-                                # class we're currently handling, NOT the
-                                # pending one!
-                                slot_type,
-                                copied_tree)]),
-                        pending_slot_type=nested_forward_ref_key))
+                        pending_slot_type=direct_forward_ref_lookup_key,
+                        pending_root_node=dest_insertion))
+                # Note that we need to include any recursion loops that end
+                # up back at the template class, since they would ALSO have
+                # the same insertion points. Helpfully, we can just merge in
+                # any existing tree for that.
+                existing_recursive_self_tree = tree_wip.get(
+                    template_cls,
+                    _SlotTreeNode())
+                _merge_into_slot_tree(
+                    template_cls,
+                    None,
+                    dest_insertion,
+                    existing_recursive_self_tree)
 
             else:
-                _merge_into_slot_tree(
-                    slot_type,
-                    existing_tree=existing_pending_tree.pending_root_node,
-                    to_merge=nested_pending_slot_tree.pending_root_node)
+                (existing_pending_tree
+                    .pending_root_node
+                    .insertion_slot_names.add(direct_pending_slot_name))
+
+        # Oh thank god.
+        tree_wip.default_factory = None
+        return cls(
+            _forward_ref_lookup_key=forward_ref_lookup_key,
+            template_cls_ref=ref(template_cls),
+            slot_names=slot_names,
+            var_names=var_names,
+            content_names=content_names,
+            _slot_tree_lookup=tree_wip,
+            _pending_ref_lookup=pending_ref_lookup)
+
+    @classmethod
+    def _normalize_slot_defs(
+            cls,
+            slot_defs: Iterable[tuple[str, _SlotAnnotation]]
+            ) -> tuple[
+                list[tuple[str, TemplateClass]],
+                list[tuple[str, ForwardRefLookupKey]]]:
+        """The annotations we get "straight off the tap" (so to speak)
+        of the template class can be:
+        ++  unions
+        ++  type aliases, though we don't quite support these yet
+            (though this function should make it relatively
+            straightforward to do so)
+        ++  concrete backrefs to existing templates
+        ++  pending forward refs to not-yet-defined templates
+
+        This function is responsible for giving us a clean, uniform way
+        of representing them. First, it expands all unions etc into
+        multiple slot paths. Second, it splits the concrete from the
+        pending nodes, returning them separately.
+        """
+        concrete_slots = []
+        pending_refs = []
+
+        flattened_defs: \
+            list[tuple[
+                str,
+                TemplateClass | type[ForwardReferenceProxyClass]]] = []
+        for slot_name, slot_annotation in slot_defs:
+            # Note that this still might contain a heterogeneous mix of
+            # template classes and forward refs! Hence flattening first.
+            if isinstance(slot_annotation, UnionType):
+                for slot_type in slot_annotation.__args__:
+                    flattened_defs.append((slot_name, slot_type))
+
+            else:
+                flattened_defs.append((slot_name, slot_annotation))
+
+        # Again, this looks redundant at first glance, but the point was to
+        # normalize unions into single types, whether concrete or pending
+        for slot_name, flattened_slot_annotation in flattened_defs:
+            if is_forward_reference_proxy(flattened_slot_annotation):
+                forward_ref = flattened_slot_annotation.REFERENCE_TARGET
+                pending_refs.append((slot_name, forward_ref))
+
+            else:
+                concrete_slots.append((slot_name, flattened_slot_annotation))
+
+        return concrete_slots, pending_refs
 
     def extract_function_invocations(
             self,
@@ -1320,29 +1392,40 @@ class TemplateSignature:
         causing it to resolve the forward ref and remove it from its
         pending trees.
         """
-        resolved_template_xable = cast(
-            type[TemplateIntersectable], resolved_template_cls)
-        resolved_signature = resolved_template_xable._templatey_signature
         enclosing_template_cls = self.template_cls_ref()
-
         if enclosing_template_cls is None:
             raise RuntimeError(
                 'Template class was garbage collected before template '
                 + 'signature, and then signature asked to resolve forward '
                 + 'ref?!')
 
-        _resolve_pending_slot_tree(
-            pending_tree=self._pending_ref_lookup.pop(lookup_key),
-            slot_name=None,
-            enclosing_cls=enclosing_template_cls,
-            enclosing_slot_tree_lookup=self._slot_tree_lookup,
-            enclosing_pending_ref_lookup=self._pending_ref_lookup,
-            resolved_cls=resolved_template_cls,
-            resolved_slot_tree_lookup=resolved_signature._slot_tree_lookup,
-            resolved_pending_ref_lookup=resolved_signature._pending_ref_lookup)
+        _update_encloser_with_trees_from_slot(
+            enclosing_template_cls,
+            self._slot_tree_lookup,
+            self._pending_ref_lookup,
+            self._forward_ref_lookup_key,
+            resolved_template_cls,
+            self._pending_ref_lookup.pop(lookup_key).pending_root_node,)
 
         self.refresh_included_template_classes_snapshot()
         self.refresh_pending_forward_ref_registration()
+
+    def stringify_all(self) -> str:
+        """This is a debug method that creates a prettified string
+        version of the entire slot tree lookup (pending and concrete).
+        """
+        to_join = []
+        to_join.append('Resolved (concrete) slots:')
+        for template_class, root_node in self._slot_tree_lookup.items():
+            to_join.append(f'  {template_class}')
+            to_join.append(root_node.stringify(depth=1))
+
+        to_join.append('Pending (forward reference) slots:')
+        for ref_lookup_key, container in self._pending_ref_lookup.items():
+            to_join.append(f'  {ref_lookup_key}')
+            to_join.append(container.pending_root_node.stringify(depth=1))
+
+        return '\n'.join(to_join)
 
 
 def _extract_template_class_locals() -> dict[str, Any] | None:
@@ -1460,10 +1543,21 @@ def is_forward_reference_proxy(
     return isinstance(obj, type) and hasattr(obj, 'REFERENCE_TARGET')
 
 
+@overload
 def _copy_slot_tree[T: _SlotTreeNode](
         src_tree: T,
-        into_tree: T | None = None
-        ) -> T:
+        ) -> T: ...
+@overload
+def _copy_slot_tree[T: _SlotTreeNode](
+        src_tree: _SlotTreeNode,
+        *,
+        with_node_type: type[T],
+        ) -> T: ...
+def _copy_slot_tree[ST: _SlotTreeNode, NT: _SlotTreeNode](
+        src_tree: ST,
+        *,
+        with_node_type: type[NT] | None = None
+        ) -> ST | NT:
     """This creates a copy of an existing slot tree. We use it when
     merging nested slot trees into enclosers; otherwise, we end up with
     a huge mess of "it's not clear what object holds which slot tree"
@@ -1478,20 +1572,25 @@ def _copy_slot_tree[T: _SlotTreeNode](
     In both cases, we also return a lookup from
     ``{old_node.id_: copied_node}``.
     """
-    copied_tree: T
-    if into_tree is None:
-        copied_tree = src_tree.empty_clone()
+    copied_tree: ST | NT
+    if with_node_type is None:
+        node_type = type(src_tree)
     else:
-        copied_tree = into_tree
-        into_tree.merge_fields_only(src_tree)
+        node_type = with_node_type
+
+    copied_tree = node_type()
+    copied_tree.merge_fields_only(src_tree)
 
     # This converts ``old_node.id_`` to the new node instance; it's how we
     # implement copying reference cycles
-    transmogrified_nodes: dict[int, T] = {src_tree.id_: copied_tree}
-    copy_stack: list[_SlotTreeTraversalFrame[T, T]] = [_SlotTreeTraversalFrame(
-        next_subtree_index=0,
-        existing_subtree=copied_tree,
-        insertion_subtree=src_tree)]
+    transmogrified_nodes: dict[int, ST | NT] = {src_tree.id_: copied_tree}
+    copy_stack: \
+        list[_SlotTreeTraversalFrame[ST | NT, ST]] = [
+            _SlotTreeTraversalFrame(
+                next_subtree_index=0,
+                existing_subtree=copied_tree,
+                insertion_subtree=src_tree,
+                first_encounters={})]
 
     while copy_stack:
         current_stack_frame = copy_stack[-1]
@@ -1510,7 +1609,8 @@ def _copy_slot_tree[T: _SlotTreeNode](
         # This could be either the first time we hit a recursive subtree,
         # or a non-recursive subtree.
         if already_copied_node is None:
-            new_subtree = next_subtree.empty_clone()
+            new_subtree = node_type()
+            new_subtree.merge_fields_only(next_subtree)
 
             if next_subtree.requires_transmogrification:
                 transmogrified_nodes[next_subtree_id] = new_subtree
@@ -1523,7 +1623,10 @@ def _copy_slot_tree[T: _SlotTreeNode](
             copy_stack.append(_SlotTreeTraversalFrame(
                 next_subtree_index=0,
                 existing_subtree=new_subtree,
-                insertion_subtree=next_subtree))
+                insertion_subtree=next_subtree,
+                # Note that, though this isn't correct, it also
+                # doesn't matter for purely COPYING a slot tree.
+                first_encounters={}))
 
         # We've hit a recursive subtree -- one that we've already copied --
         # which means we don't need to copy it again; instead, we just need to
@@ -1540,7 +1643,11 @@ def _copy_slot_tree[T: _SlotTreeNode](
 
 
 def _merge_into_slot_tree[T: _SlotTreeNode](
-        existing_slot_type: TemplateClass,
+        existing_tree_template_cls: TemplateClass,
+        # Note: this is only used for determining ``is_terminus``.
+        # Also note: None for pending slots. These can never be a terminus
+        # anyways, so it doesn't matter.
+        existing_tree_slot_type: TemplateClass | None,
         existing_tree: T,
         to_merge: T
         ) -> None:
@@ -1548,23 +1655,33 @@ def _merge_into_slot_tree[T: _SlotTreeNode](
     its subtrees into the correct locations in the existing slot tree,
     recursively.
 
-    This is needed because unions can have slots with overlapping slot
-    names, but we don't want to redo a ton of tree recursion.
+    This will cull any recursion loops to their minimum possible size.
+    Note that this can result in different slot tree recursion loop
+    "phases", based on which of the two slot types is encountered first.
 
-    In theory, this might result in some edge case scenarios where two
-    effectively identical templates within a union, one of which calls
-    an env function and one of which doesn't, might actually result in
-    some unnecessary calls to the env function during prepopulation.
-    I'm honestly not sure either way; we'd need more testing to verify
-    either way. The solution in that case would probably be some kind
-    of instance check to verify just before running the function that
-    it was actually the expected instance type / has the expected
-    function calls.
-
-    We return a lookup of ``{source_node.id_: dest_node}``, which can
-    be used for recording and/or resolving pending forward refs.
+    Also note that this merges all public slot tree node attributes,
+    with three exceptions:
+    ++  the ``id_`` of the existing tree is always preserved
+    ++  ``is_recursive`` will always be calculated based on the
+        recursion loop culling
+    ++  ``is_terminus`` will always be calculated based on node types
+        matching the passed ``existing_tree_slot_type``.
     """
+    node_type = type(existing_tree)
     transmogrified_nodes: dict[int, T] = {to_merge.id_: existing_tree}
+    # Note: we want our internal culling logic to handle ``is_recursive``.
+    # Also note: the existing tree usually knows whether or not it's already
+    # recursive, but there's an edge case where it doesn't:
+    # 1.. have a recursive loop between two templates
+    # 2.. when resolving the back-ref of the second template, it finds a
+    #     forward ref to itself
+    # 3.. it now immediately resolves the forward ref to itself
+    # In this situation, the short-circuited self-referential forward ref
+    # results in is_terminus being False, which we correct here.
+    existing_tree.merge_fields_only(
+        to_merge, fields_to_skip={'is_recursive', 'is_terminus'})
+    existing_tree.is_terminus = (
+        existing_tree_template_cls is existing_tree_slot_type)
 
     # Counterintuitive: since we're MERGING trees, the existing_subtree is
     # actually the DESTINATION, and the insertion_subtree the source!
@@ -1572,7 +1689,8 @@ def _merge_into_slot_tree[T: _SlotTreeNode](
         _SlotTreeTraversalFrame(
             next_subtree_index=0,
             existing_subtree=existing_tree,
-            insertion_subtree=to_merge)]
+            insertion_subtree=to_merge,
+            first_encounters={existing_tree_template_cls: existing_tree})]
     # Yes, in theory, this one specific operation of merging trees would be
     # faster if the trees were dicts instead of iterative structures. But
     # we're not optimizing for tree merging; we're optimizing for rendering!
@@ -1597,9 +1715,35 @@ def _merge_into_slot_tree[T: _SlotTreeNode](
         # For merging, we're going to handle the recursive subtree case first,
         # because it makes the rest of the logic cleaner
         if already_merged_node is not None:
+            # Note that appending is idempotent as long as the
+            # already_merged_node is the same object as any hypothetical
+            # already_existing_already_merged_node that could be found there.
+            # So this will only error if the slot path already exists, AND
+            # it points to a different node.
             current_stack_frame.existing_subtree.append(
                 _SlotTreeRoute.new(
                     next_slot_name, next_slot_type, already_merged_node))
+
+            already_merged_node.merge_fields_only(
+                next_subtree,
+                # Note: we want our internal culling logic to handle
+                # ``is_recursive``. Otherwise, we might result in something
+                # being reported as recursive, which actually isn't -- because
+                # the ... phase, I guess you could say ... of the recursion
+                # loop is different with a different root node.
+                # Also note: we don't want to preserve the terminus value of
+                # a tree we're merging in; we want the terminus to be purely
+                # calculated within the merge function. This prevents bugs
+                # when merging trees across slot types, which happens a lot
+                # with pending slot trees.
+                fields_to_skip={'is_recursive', 'is_terminus'})
+            # This might seem redundant, but there are some weird edge cases
+            # when merging a fully-defined tree (for example, adding in
+            # self-referential recursion loops to a pending tree) that require
+            # it to be set.
+            # (This is because we skip it when merging the fields on the
+            # existing tree; this recovers the correct state).
+            already_merged_node.is_recursive = True
             continue
 
         # This accomplishes two things: first, it culls an extra cycle from the
@@ -1607,25 +1751,34 @@ def _merge_into_slot_tree[T: _SlotTreeNode](
         # it ensures correct recursion when we're merging in the pending tree
         # from a class that used us as a forward reference, since the other
         # class won't yet be resolved.
-        if next_slot_type is existing_slot_type:
-            next_existing_subtree = existing_tree
+        # Note that, by definition, this won't happen the first time we
+        # encounter a node of any particular type, including the type of the
+        # rootwards-most node for the whole tree. This is expected! We first
+        # need to encounter the slot type before we can recurse to it. **We
+        # will never recurse back to the root of the slot tree!**
+        if next_slot_type in current_stack_frame.first_encounters:
+            # Note that we want to avoid modifying the already-encountered
+            # tree. This is mostly because we copy trees willy nilly and want
+            # to avoid them accidentally getting out of sync. However, it does
+            # require us to be very careful to ensure that we've corrently
+            # copied all needed values over prior to merging trees, if we've
+            # just created the existing tree from scratch.
+            next_existing_subtree = current_stack_frame.first_encounters[
+                next_slot_type]
             next_existing_subtree.is_recursive = True
 
-            # Remember that next_slot_type is the existing_slot_type that we
-            # started this whole thing off with. Therefore, this should be
-            # impossible: True would imply that we'd already resolved this
-            # recursive branch pointing at itself and are somehow revisiting it
-            # afterwards
+            next_existing_route = _SlotTreeRoute.new(
+                next_slot_name,
+                next_slot_type,
+                next_existing_subtree)
             if existing_subtree.has_route_for(next_slot_name, next_slot_type):
-                raise RecursionError(
-                    'Non-culled infinite recursion while merging templatey '
-                    + 'slot trees!', next_slot_name, next_slot_type)
+                existing_subtree.rewrite_route_for(
+                    next_slot_name, next_slot_type, next_existing_route)
+                # raise RecursionError(
+                #     'Non-culled infinite recursion while merging templatey '
+                #     + 'slot trees!', next_slot_name, next_slot_type)
 
             else:
-                next_existing_route = _SlotTreeRoute.new(
-                    next_slot_name,
-                    next_slot_type,
-                    next_existing_subtree)
                 existing_subtree.append(next_existing_route)
 
             # Note that we don't need to update transmogrification for two
@@ -1642,7 +1795,19 @@ def _merge_into_slot_tree[T: _SlotTreeNode](
             next_existing_route = existing_subtree.get_route_for(
                     next_slot_name, next_slot_type)
             __, __, next_existing_subtree = next_existing_route
-            next_existing_subtree.merge_fields_only(next_subtree)
+            next_existing_subtree.merge_fields_only(
+                next_subtree,
+                # Note: we want our internal culling logic to handle
+                # ``is_recursive``. Otherwise, we might result in something
+                # being reported as recursive, which actually isn't -- because
+                # the ... phase, I guess you could say ... of the recursion
+                # loop is different with a different root node.
+                # Also note: we don't want to preserve the terminus value of
+                # a tree we're merging in; we want the terminus to be purely
+                # calculated within the merge function. This prevents bugs
+                # when merging trees across slot types, which happens a lot
+                # with pending slot trees.
+                fields_to_skip={'is_recursive', 'is_terminus'})
 
         # The existing subtree doesn't have any existing routes for this, so
         # we don't need to worry about merging things together -- but we still
@@ -1651,7 +1816,19 @@ def _merge_into_slot_tree[T: _SlotTreeNode](
         # slot types in the case of a union, but that will be handled on a
         # different iteration of the merge stack while loop.
         else:
-            next_existing_subtree = next_subtree.empty_clone()
+            # Note that the next_subtree might have a different node type
+            # than the existing tree!
+            next_existing_subtree = node_type()
+            next_existing_subtree.merge_fields_only(
+                next_subtree,
+                fields_to_skip={'is_recursive', 'is_terminus'})
+            # Because we do lots and lots of merging, with offsets and
+            # transforms etc, it's easiest to just reset this every time.
+            # This helps prevent weird bugs with copying.
+            next_existing_subtree.is_terminus = (
+                # Note: what matters here is the slot type, not the template
+                # class!
+                next_slot_type is existing_tree_slot_type)
             next_existing_route = _SlotTreeRoute.new(
                 next_slot_name,
                 next_slot_type,
@@ -1662,15 +1839,146 @@ def _merge_into_slot_tree[T: _SlotTreeNode](
             transmogrified_nodes[next_subtree_id] = next_existing_subtree
 
         if next_subtree:
+            next_first_encounters = {**current_stack_frame.first_encounters}
+            next_first_encounters.setdefault(
+                next_slot_type, next_existing_subtree)
             merge_stack.append(_SlotTreeTraversalFrame(
                 next_subtree_index=0,
                 existing_subtree=next_existing_subtree,
-                insertion_subtree=next_subtree))
+                insertion_subtree=next_subtree,
+                first_encounters=next_first_encounters))
+
+
+def _update_encloser_with_trees_from_slot(
+        enclosing_cls: TemplateClass,
+        enclosing_slot_tree_lookup: dict[TemplateClass, _ConcreteSlotTreeNode],
+        enclosing_pending_ref_lookup:
+            dict[ForwardRefLookupKey, _PendingSlotTreeContainer],
+        enclosing_cls_ref_lookup_key: ForwardRefLookupKey,
+        nested_slot_type: TemplateClass,
+        nested_slot_offset: _PendingSlotTreeNode,
+        ) -> None:
+    """This function updates the enclosing class' concrete and pending
+    slot trees with the concrete and pending slot trees from the
+    nested slot.
+
+    Note that it can be called during initial signature assembly, hence
+    needing explicit arguments instead of relying upon the lookups
+    already being defined on the class.
+    """
+    nested_slot_xable = cast(type[TemplateIntersectable], nested_slot_type)
+    nested_lookup = nested_slot_xable._templatey_signature._slot_tree_lookup
+    nested_pending_refs = (
+        nested_slot_xable._templatey_signature._pending_ref_lookup)
+    # First and foremost, we can't forget to add a route for the
+    # actual slot itself!
+    _apply_concrete_insertions(
+        enclosing_cls,
+        enclosing_slot_tree_lookup,
+        nested_slot_type,
+        nested_lookup,
+        nested_slot_type,
+        # Note that this is actually supposed to be the nested slot offset
+        # in both cases; the function itself gets the appropriate tree from
+        # the nested_lookup
+        nested_slot_offset)
+
+    # Now the CONCRETE nested slots.
+    # IMPORTANT: all of the nested concrete slots need to already
+    # be merged in before starting the nested pending refs! (More
+    # info below).
+    for doubly_nested_slot_type in nested_lookup:
+        _apply_concrete_insertions(
+            enclosing_cls,
+            enclosing_slot_tree_lookup,
+            nested_slot_type,
+            nested_lookup,
+            doubly_nested_slot_type,
+            # Note that this is actually supposed to be the nested slot offset
+            # in both cases; the function itself gets the appropriate tree from
+            # the nested_lookup
+            nested_slot_offset)
+
+    # And now, finally, the nested PENDING slots.
+    # IMPORTANT: all of the nested concrete slots need to already
+    # be merged in before starting the nested pending refs!
+    # If we reversed the order, then we wouldn't be able to
+    # guarantee that we'd already discovered every possible
+    # terminus node for the nested slot type (due to potential
+    # recursion loops). This could then cause us to miss out on
+    # a lot of the combinatorics of the offset pending trees.
+    # That being said, note that this is just a transform-and-merge
+    # operation; we're not adding any additional insertion points
+    # on top of what the nested slot defines. That happens later,
+    # when we deal with the pending ref defs for the enclosing
+    # template class (the one we're currently constructing a
+    # signature for).
+
+    # Note: we want to special-case a nested forward ref to the
+    # enclosing class (ie, a recursion loop) for exactly the
+    # same reason: to guarantee it's resolved before we start on
+    # the other nested ones. Hence copy-and-mutate.
+    unresolved_nested_forward_refs = {**nested_pending_refs}
+
+    # Remember that we're potentially in the middle of constructing the
+    # signature for a new template class. If the nested class
+    # (from the slot) was depending on the class we're still
+    # constructing, it hasn't yet been updated with the
+    # resolved class. Therefore, instead of needing to come
+    # back and fix up any recursive forward refs later, we can
+    # simply do them right here, right now.
+    # Also note that we'll NEVER have an existing pending tree
+    # for this, because we're adding it directly and
+    # immediately into the actual slot tree.
+    encloser_referencing_pending_container = (
+        unresolved_nested_forward_refs.pop(
+            enclosing_cls_ref_lookup_key, None))
+    if encloser_referencing_pending_container is not None:
+        # This is effectively a special-case of pending slot tree extension
+        # where we immediately apply the concrete insertions. But we still need
+        # to merge the two pending trees (which handles the combinatorics --
+        # remember that each insertion point for the nested class will also
+        # get N insertion points from its references to the enclosing cls).
+        _extend_pending_slot_tree(
+            enclosing_cls=enclosing_cls,
+            enclosing_slot_tree_lookup=enclosing_slot_tree_lookup,
+            enclosing_pending_ref_lookup=enclosing_pending_ref_lookup,
+            nested_cls=nested_slot_type,
+            nested_pending_container=encloser_referencing_pending_container,
+            nested_pending_ref=enclosing_cls_ref_lookup_key,)
+        offset_pending_container = enclosing_pending_ref_lookup.pop(
+            enclosing_cls_ref_lookup_key)
+        _apply_concrete_insertions(
+            enclosing_cls,
+            enclosing_slot_tree_lookup,
+            # These are counter-intuitive, but correct. We've divorced this
+            # from the nested slot entirely; all the insertion points for it
+            # now are pointed back at ourselves.
+            enclosing_cls,
+            enclosing_slot_tree_lookup,
+            enclosing_cls,
+            offset_pending_container.pending_root_node)
+
+    # Okay, after all of that meticulous work, we can now guarantee
+    # that all of the concrete classes we know about up until this
+    # point have been fully resolved and incorporated into the
+    # slot tree. That means we can FINALLY start merging the
+    # pending items from the nested slot.
+    for (
+        nested_forward_ref_key, nested_pending_container
+    ) in unresolved_nested_forward_refs.items():
+        _extend_pending_slot_tree(
+            enclosing_cls=enclosing_cls,
+            enclosing_slot_tree_lookup=enclosing_slot_tree_lookup,
+            enclosing_pending_ref_lookup=enclosing_pending_ref_lookup,
+            nested_cls=nested_slot_type,
+            nested_pending_container=nested_pending_container,
+            nested_pending_ref=nested_forward_ref_key,)
 
 
 def _resolve_pending_slot_tree(  # noqa: PLR0913
         pending_tree: _PendingSlotTreeContainer,
-        slot_name: str | None,
+        slot_info: tuple[str, TemplateClass] | None,
         enclosing_cls: TemplateClass,
         enclosing_slot_tree_lookup: dict[TemplateClass, _ConcreteSlotTreeNode],
         enclosing_pending_ref_lookup:
@@ -1705,40 +2013,74 @@ def _resolve_pending_slot_tree(  # noqa: PLR0913
         in the above case, where this is called during initial tree
         creation for a resolved class in a recursive loop).
     """
-    # We need to make sure to include the actual resolved class itself in
-    # the slot tree! But instead of special-casing it, we can just let it be
-    # handled by the same logic for the nested ones.
-    resolved_slot_item = (resolved_cls, _SlotTreeNode(is_terminus=True))
-    all_nested_slot_items = itertools.chain(
-        resolved_slot_tree_lookup.items(),
-        [resolved_slot_item])
-
     pending_tree_root_node = pending_tree.pending_root_node
-    for nested_template_cls,  nested_root_node in all_nested_slot_items:
-        # Note: this means that we're resolving against the root tree. That
+    if slot_info is None:
+        # Note: the root of the tree is only a terminus if the slot type
+        # matches the enclosing class, and slot_info=None
+        # implies that we're working from the root of the tree.
+        resolved_slot_item = (resolved_cls, _SlotTreeNode())
+
+        # Note: again, we're resolving against the root tree. That
         # means that the pending tree is relative to it, and not to a nested
-        # slot. This implies that we're resolving a forward ref on an
+        # slot. This also implies that we're resolving a forward ref on an
         # already-existing template class.
-        if slot_name is None:
-            tree_after_insertions = _apply_insertions(
-                resolved_cls,
-                pending_tree_root_node,
-                nested_root_node)
+        # It also means we don't need to offset the given tree.
+        offset_pending_tree_root_node = pending_tree_root_node
+
+    else:
+        slot_name, slot_cls = slot_info
+        resolved_slot_item = (
+            resolved_cls,
+            _SlotTreeNode([_SlotTreeRoute.new(
+                slot_name, slot_cls, _SlotTreeNode())]))
 
         # However, in this case, we're resolving against a specific slot on
         # a root key. This implies that we're resolving a forward ref on a
-        # not-yet-exited-the-decorator template class.
-        else:
-            # Note that the nesting is crucial; that's what puts the tree under
-            # the correct slot for the enclosing class, instead of retaining
-            # the tree depth and root slot from the resolved class.
-            tree_after_insertions = _SlotTreeNode([_SlotTreeRoute.new(
+        # not-yet-exited-for-the-decorator template class.
+        # This means the naked tree isn't yet nested under the correct slot.
+        # Note that the nesting is crucial; that's what puts the tree under
+        # the correct slot for the enclosing class, instead of retaining
+        # the tree depth and root slot from the resolved class.
+        offset_pending_tree_root_node = _PendingSlotTreeNode([
+            _SlotTreeRoute.new(
                 slot_name,
-                resolved_cls,
-                _apply_insertions(
-                    resolved_cls,
-                    pending_tree_root_node,
-                    nested_root_node))])
+                slot_cls,
+                pending_tree_root_node)])
+
+    # We need to make sure to include the actual resolved class itself in
+    # the slot tree! But instead of special-casing it, we can just let it be
+    # handled by the same logic for the nested ones.
+    all_nested_slot_items = itertools.chain(
+        resolved_slot_tree_lookup.items(),
+        [resolved_slot_item])
+    for nested_template_cls, nested_root_node in all_nested_slot_items:
+        # We're about to change some of the fields here based on the nested
+        # template class, so we want to make sure we're only modifying a copy.
+        copied_offset_pending_tree_root_node = _copy_slot_tree(
+            offset_pending_tree_root_node)
+
+        # Note that, even though we're iterating over mostly just the
+        # resolved_slot_tree_lookup.items(), we've added the resolved_cls to
+        # the mix, which may or may not be in the lookup; therefore, this check
+        # is necessary.
+        if nested_template_cls in resolved_slot_tree_lookup:
+            root_node = resolved_slot_tree_lookup[nested_template_cls]
+            copied_offset_pending_tree_root_node.merge_fields_only(root_node)
+
+        # Note: it's important to do the offsets BEFORE applying insertions,
+        # because it allows recursion detection to function correctly against
+        # the root node.
+        tree_after_insertions = _apply_insertions(
+            resolved_cls,
+            copied_offset_pending_tree_root_node,
+            nested_template_cls,
+            nested_root_node)
+        # The root node of a slot tree pointing back at the enclosing class --
+        # ie, a recursive slot -- must have is_terminus set to True, otherwise
+        # recursion won't work correctly, since the recursive nodes will be
+        # pointing at the root object.
+        tree_after_insertions.is_terminus |= (
+            nested_template_cls is enclosing_cls)
 
         dest_tree = enclosing_slot_tree_lookup.get(nested_template_cls)
         # Note that we still need to call merge_into to perform any needed
@@ -1746,10 +2088,20 @@ def _resolve_pending_slot_tree(  # noqa: PLR0913
         # enclosing lookup
         if dest_tree is None:
             dest_tree = enclosing_slot_tree_lookup[nested_template_cls] = (
-                _SlotTreeNode())
+                # Copying over the ID isn't necessary, but it makes the
+                # lineage a bit clearer if you need to debug things
+                _SlotTreeNode(id_=tree_after_insertions.id_))
+
+        # This, however, IS necessary. The destination tree is used as the
+        # first encounter of the template class, and merging avoids
+        # modifying already-encountered nodes. Therefore, we have to
+        # explicitly merge the values of tree_after_insertions to avoid
+        # discarding them!
+        dest_tree.merge_fields_only(tree_after_insertions)
 
         _merge_into_slot_tree(
             enclosing_cls,
+            nested_template_cls,
             dest_tree,
             tree_after_insertions)
 
@@ -1757,82 +2109,112 @@ def _resolve_pending_slot_tree(  # noqa: PLR0913
         forward_ref_key,
         pending_tree_container
     ) in resolved_pending_ref_lookup.items():
-        # Note: this means that we're resolving against the root tree. That
-        # means that the pending tree is relative to it, and not to a nested
-        # slot. This implies that we're resolving a forward ref on an
-        # already-existing template class.
-        if slot_name is None:
-            tree_after_insertions = _apply_insertions(
-                resolved_cls,
-                pending_tree_root_node,
-                pending_tree_container.pending_root_node)
+        # We're about to change some of the fields here based on the nested
+        # template class, so we want to make sure we're only modifying a copy.
+        copied_offset_pending_tree_root_node = _copy_slot_tree(
+            offset_pending_tree_root_node)
+        # Note that -- unlike with the concrete tree -- because we're not
+        # injecting anything here, this is always correct.
+        copied_offset_pending_tree_root_node.merge_fields_only(
+            pending_tree_container.pending_root_node)
 
-        # However, in this case, we're resolving against a specific slot on
-        # a root key. This implies that we're resolving a forward ref on a
-        # not-yet-exited-the-decorator template class.
-        else:
-            # Again, nesting here is crucial, otherwise the tree would be
-            # missing its slot name for the enclosing_cls
-            tree_after_insertions = _PendingSlotTreeNode([_SlotTreeRoute.new(
-                slot_name,
-                resolved_cls,
-                _apply_insertions(
-                    resolved_cls,
-                    pending_tree_root_node,
-                    pending_tree_container.pending_root_node))])
+        # Note: it's important to do the offsets BEFORE applying insertions,
+        # because it allows recursion detection to function correctly against
+        # the root node.
+        tree_after_insertions = _apply_insertions(
+            resolved_cls,
+            copied_offset_pending_tree_root_node,
+            forward_ref_key,
+            pending_tree_container.pending_root_node)
 
         dest_pending = enclosing_pending_ref_lookup.get(forward_ref_key)
         # Note that we still need to call merge_into to perform any needed
         # culling, so we can't simply assign the dest_tree as the value in the
         # enclosing lookup
         if dest_pending is None:
-            dest_tree =  _PendingSlotTreeNode()
+            # Copying over the ID isn't necessary, but it makes the
+            # lineage a bit clearer if you need to debug things
+            dest_tree =  _PendingSlotTreeNode(id_=tree_after_insertions.id_)
             enclosing_pending_ref_lookup[forward_ref_key] = (
                 _PendingSlotTreeContainer(forward_ref_key, dest_tree))
         else:
             dest_tree = dest_pending.pending_root_node
 
+        # This, however, IS necessary, and especially important for the
+        # insertion slot names!
+        dest_tree.merge_fields_only(tree_after_insertions)
+
         _merge_into_slot_tree(
             enclosing_cls,
+            None,
             dest_tree,
             tree_after_insertions)
 
 
-def _apply_insertions[T: _ConcreteSlotTreeNode | _PendingSlotTreeNode](
-        resolved_cls: TemplateClass,
-        pending_tree: _PendingSlotTreeNode,
-        nested_root_node: T,
-        ) -> T:
-    """For a particular pending tree and a single nested CONCRETE root
-    node, this searches the pending tree for all insertion points and
-    then inserts the concrete root node at that point.
+def _apply_concrete_insertions(
+        enclosing_cls: TemplateClass,
+        enclosing_slot_tree_lookup: dict[TemplateClass, _ConcreteSlotTreeNode],
+        nested_slot_type: TemplateClass,
+        # Note: may or may not be different from insertion_cls; see note in
+        # docstring
+        nested_slot_tree_lookup: dict[TemplateClass, _ConcreteSlotTreeNode],
+        insertion_slot_type: TemplateClass,
+        insertion_tree: _PendingSlotTreeNode
+        ) -> None:
+    """This takes an insertion tree (a pending slot tree node), applies
+    a resolved, concrete insertion class at each of the insertion
+    points on the insertion tree, and then merges the result into the
+    slot tree lookup for the enclosing class.
 
-    **Note that this does not cull any superfluous recursive
-    refererence cycles.** You still need to merge the resulting tree
-    into the actual slot tree lookup, and then that does the culling.
+    Note that this is meant to be used both with the nested class
+    itself, as well as its (doubly-)nested concrete slots. In the former
+    case, the slot tree lookup will match the insertion class. In the
+    latter case, the insertion class will instead be the (doubly-)nested
+    concrete slot.
     """
-    resulting_tree: T = type(nested_root_node)()
-    resulting_tree.merge_fields_only(pending_tree)
+    root_after_insertion = _SlotTreeNode()
+    tree_to_insert = nested_slot_tree_lookup.get(
+        insertion_slot_type,
+        _SlotTreeNode(is_terminus=True))
+
     # This converts ``old_node.id_`` to the new node instance; it's how we
     # implement copying reference cycles
     transmogrified_nodes: dict[int, _SlotTreeNode] = {
-        pending_tree.id_: resulting_tree}
-
+        insertion_tree.id_: root_after_insertion}
     stack: \
         list[_SlotTreeTraversalFrame[_SlotTreeNode, _PendingSlotTreeNode]] = [
         _SlotTreeTraversalFrame(
             next_subtree_index=0,
-            existing_subtree=resulting_tree,
-            insertion_subtree=pending_tree)]
+            existing_subtree=root_after_insertion,
+            insertion_subtree=insertion_tree,
+            first_encounters={enclosing_cls: root_after_insertion})]
 
     while stack:
         current_stack_frame = stack[-1]
+        src_subtree = current_stack_frame.insertion_subtree
+        target_subtree = current_stack_frame.existing_subtree
+
         if current_stack_frame.exhausted:
+            # This is counter-intuitive. Note that:
+            # ++  the stack is for checking nested (deeper) routes only. it
+            #     does not check for insertions on the current stack frame.
+            # ++  the current stack frame might, though, actually have some
+            #     insertions!
+            # ++  we only want those insertions to be applied ONCE, and not
+            #     once per subtree
+            # ++  ordering of the insertion application doesn't matter
+            # Therefore, we apply insertions to the current frame immediately
+            # before discarding the frame for being exhausted.
+            for nested_slot_type_slot_name in src_subtree.insertion_slot_names:
+                target_subtree.append(
+                    _SlotTreeRoute.new(
+                        nested_slot_type_slot_name,
+                        nested_slot_type,
+                        _copy_slot_tree(tree_to_insert)))
+
             stack.pop()
             continue
 
-        src_subtree = current_stack_frame.insertion_subtree
-        target_subtree = current_stack_frame.existing_subtree
         next_slot_route = src_subtree[current_stack_frame.next_subtree_index]
         next_slot_name, next_slot_type, next_subtree = next_slot_route
         # Do this ASAP so that we don't accidentally forget it somehow
@@ -1843,49 +2225,284 @@ def _apply_insertions[T: _ConcreteSlotTreeNode | _PendingSlotTreeNode](
         # recursive reference cycles, so we don't need to worry about that
         # here.
         next_subtree_id = next_subtree.id_
-        already_applied_node = transmogrified_nodes.get(next_subtree_id)
+        transmogrified_dest_subtree = transmogrified_nodes.get(next_subtree_id)
 
         # This could be either the first time we hit a recursive subtree,
         # or a non-recursive subtree.
-        if already_applied_node is None:
-            new_subtree = _SlotTreeNode()
-            new_subtree.merge_fields_only(next_subtree)
+        if transmogrified_dest_subtree is None:
+            dest_subtree = _SlotTreeNode()
+            dest_subtree.merge_fields_only(next_subtree)
 
             if next_subtree.requires_transmogrification:
-                transmogrified_nodes[next_subtree_id] = new_subtree
+                transmogrified_nodes[next_subtree_id] = dest_subtree
 
+            # Note that, since we're building a new tree from scratch, we don't
+            # need to worry about this already existing.
             target_subtree.append(
                 _SlotTreeRoute.new(
                     next_slot_name,
                     next_slot_type,
-                    new_subtree))
+                    dest_subtree))
+            next_first_encounters = {**current_stack_frame.first_encounters}
+            next_first_encounters.setdefault(next_slot_type, dest_subtree)
             stack.append(_SlotTreeTraversalFrame(
                 next_subtree_index=0,
-                existing_subtree=new_subtree,
-                insertion_subtree=next_subtree))
+                existing_subtree=dest_subtree,
+                insertion_subtree=next_subtree,
+                first_encounters=next_first_encounters))
 
         # We've hit a recursive subtree -- one that we've already copied --
         # which means we don't need to copy it again; instead, we just need to
         # transmogrify the reference so that the nested route refers back to
         # the original copied node.
         else:
+            dest_subtree = transmogrified_dest_subtree
             # Note: is_recursive was already set!
             target_subtree.append(
                 _SlotTreeRoute.new(
                     next_slot_name,
                     next_slot_type,
-                    already_applied_node))
+                    transmogrified_dest_subtree))
 
-        # Note that this is IN ADDITION to copying any nested routes! This is
-        # purely for the insertions.
-        for insertion_slot_name in src_subtree.insertion_slot_names:
+    enclosing_root = enclosing_slot_tree_lookup.get(insertion_slot_type)
+    if enclosing_root is None:
+        enclosing_root = enclosing_slot_tree_lookup[insertion_slot_type] = (
+            _SlotTreeNode())
+
+    _merge_into_slot_tree(
+        enclosing_cls,
+        insertion_slot_type,
+        enclosing_root,
+        root_after_insertion)
+
+
+@overload
+def _apply_insertions(
+        resolved_cls: TemplateClass,
+        pending_tree: _PendingSlotTreeNode,
+        nested_template_type: TemplateClass,
+        nested_root_node: _ConcreteSlotTreeNode
+        ) -> _ConcreteSlotTreeNode: ...
+@overload
+def _apply_insertions(
+        resolved_cls: TemplateClass,
+        pending_tree: _PendingSlotTreeNode,
+        nested_template_type: ForwardRefLookupKey,
+        nested_root_node: _PendingSlotTreeNode
+        ) -> _PendingSlotTreeNode: ...
+def _apply_insertions[T: _ConcreteSlotTreeNode | _PendingSlotTreeNode](
+        resolved_cls: TemplateClass,
+        pending_tree: _PendingSlotTreeNode,
+        nested_template_type: TemplateClass | ForwardRefLookupKey,
+        nested_root_node: T,
+        ) -> T:
+    """For a particular pending tree and a single nested CONCRETE root
+    node, this searches the pending tree for all insertion points and
+    then inserts the concrete root node at that point.
+
+    **Note that this does not cull any superfluous recursive
+    refererence cycles.** You still need to merge the resulting tree
+    into the actual slot tree lookup, and then that does the culling.
+    """
+    if isinstance(nested_template_type, ForwardRefLookupKey):
+        first_encounter_cls = None
+    else:
+        first_encounter_cls = nested_template_type
+
+    resulting_tree: T = type(nested_root_node)()
+    resulting_tree.merge_fields_only(pending_tree)
+    # This converts ``old_node.id_`` to the new node instance; it's how we
+    # implement copying reference cycles
+    transmogrified_nodes: dict[int, T] = {
+        pending_tree.id_: resulting_tree}
+
+    stack: \
+        list[_SlotTreeTraversalFrame[_SlotTreeNode, _PendingSlotTreeNode]] = [
+        _SlotTreeTraversalFrame(
+            next_subtree_index=0,
+            existing_subtree=resulting_tree,
+            insertion_subtree=pending_tree,
+            first_encounters={first_encounter_cls: resulting_tree})]
+
+    while stack:
+        current_stack_frame = stack[-1]
+        src_subtree = current_stack_frame.insertion_subtree
+        target_subtree = current_stack_frame.existing_subtree
+
+        if current_stack_frame.exhausted:
+            # This is counter-intuitive. Note that:
+            # ++  the stack is for checking nested (deeper) routes only. it
+            #     does not check for insertions on the current stack frame.
+            # ++  the current stack frame might, though, actually have some
+            #     insertions!
+            # ++  we only want those insertions to be applied ONCE, and not
+            #     once per subtree
+            # ++  ordering of the insertion application doesn't matter
+            # Therefore, we apply insertions to the current frame immediately
+            # before discarding the frame for being exhausted.
+            for insertion_slot_name in src_subtree.insertion_slot_names:
+                target_subtree.append(
+                    _SlotTreeRoute.new(
+                        insertion_slot_name,
+                        resolved_cls,
+                        _copy_slot_tree(nested_root_node)))
+
+            stack.pop()
+            continue
+
+        next_slot_route = src_subtree[current_stack_frame.next_subtree_index]
+        next_slot_name, next_slot_type, next_subtree = next_slot_route
+        # Do this ASAP so that we don't accidentally forget it somehow
+        current_stack_frame.next_subtree_index += 1
+
+        # Note that this will still get merged into the actual full slot tree
+        # for the enclosing template, which will cull any extra links in
+        # recursive reference cycles, so we don't need to worry about that
+        # here.
+        next_subtree_id = next_subtree.id_
+        transmogrified_dest_subtree = transmogrified_nodes.get(next_subtree_id)
+
+        # This could be either the first time we hit a recursive subtree,
+        # or a non-recursive subtree.
+        if transmogrified_dest_subtree is None:
+            dest_subtree = type(nested_root_node)()
+            dest_subtree.merge_fields_only(next_subtree)
+
+            if next_subtree.requires_transmogrification:
+                transmogrified_nodes[next_subtree_id] = dest_subtree
+
             target_subtree.append(
                 _SlotTreeRoute.new(
-                    insertion_slot_name,
-                    resolved_cls,
-                    _copy_slot_tree(nested_root_node)))
+                    next_slot_name,
+                    next_slot_type,
+                    dest_subtree))
+            next_first_encounters = {**current_stack_frame.first_encounters}
+            next_first_encounters.setdefault(next_slot_type, dest_subtree)
+            stack.append(_SlotTreeTraversalFrame(
+                next_subtree_index=0,
+                existing_subtree=dest_subtree,
+                insertion_subtree=next_subtree,
+                first_encounters=next_first_encounters))
+
+        # We've hit a recursive subtree -- one that we've already copied --
+        # which means we don't need to copy it again; instead, we just need to
+        # transmogrify the reference so that the nested route refers back to
+        # the original copied node.
+        else:
+            dest_subtree = transmogrified_dest_subtree
+            # Note: is_recursive was already set!
+            target_subtree.append(
+                _SlotTreeRoute.new(
+                    next_slot_name,
+                    next_slot_type,
+                    transmogrified_dest_subtree))
 
     return resulting_tree
+
+
+def _extend_pending_slot_tree(
+        enclosing_cls: TemplateClass,
+        enclosing_slot_tree_lookup: dict[TemplateClass, _ConcreteSlotTreeNode],
+        enclosing_pending_ref_lookup:
+            dict[ForwardRefLookupKey, _PendingSlotTreeContainer],
+        nested_cls: TemplateClass,
+        nested_pending_container: _PendingSlotTreeContainer,
+        nested_pending_ref: ForwardRefLookupKey,
+        ) -> None:
+    """When we resolve a pending class, we do (of course) resolve the
+    pending class itself. But in the process, we may also suddenly have
+    a bunch of new pending refs, courtesy of the pending class.
+
+    At first glance, you might think that we could simply dump these
+    into the enclosing pending ref lookup, offset by the slot path for
+    the newly-resolved class. HOWEVER, this ignores recursion, and is
+    fragile in situations where classes have multiple slot names for
+    a particular slot type.
+
+    Instead, what we really need to do, is:
+    ++  create a pending tree copy of the concrete slot tree for the
+        newly-resolved class
+    ++  at every terminus:
+        ++  set ``is_terminus`` to False
+        ++  insert a copy of the nested root tree
+    """
+    copied_tree = _copy_slot_tree(
+        enclosing_slot_tree_lookup[nested_cls],
+        with_node_type=_PendingSlotTreeNode)
+    # Note that it's not an issue that this doesn't track the stack, because
+    # we aren't changing the structure of the existing tree at all.
+    # (We can't reuse first_encounters because it's meant for a TemplateClass)
+    encountered_node_ids: set[int] = set()
+
+    # It's a little weird to be repurposing the slot tree traversal frame
+    # when the existing and insertion subtrees are always the same, but it
+    # won't break anything, so we might as well.
+    stack: \
+        list[
+            _SlotTreeTraversalFrame[_PendingSlotTreeNode,
+            _PendingSlotTreeNode]] = [_SlotTreeTraversalFrame(
+                next_subtree_index=0,
+                existing_subtree=copied_tree,
+                insertion_subtree=copied_tree,
+                first_encounters={})]
+
+    while stack:
+        current_stack_frame = stack[-1]
+        if current_stack_frame.exhausted:
+            stack.pop()
+            continue
+
+        next_slot_route = current_stack_frame.insertion_subtree[
+            current_stack_frame.next_subtree_index]
+        __, next_slot_type, next_subtree = next_slot_route
+        # Do this ASAP so that we don't accidentally forget it somehow
+        current_stack_frame.next_subtree_index += 1
+
+        # There's never anything to do here; it means we've already done all
+        # of our transforms and insertions, because it's always recursive.
+        # Doesn't matter where on the tree we are. We've already fixed this
+        # node, period, end of story.
+        if next_subtree.id_ in encountered_node_ids:
+            continue
+        encountered_node_ids.add(next_subtree.id_)
+
+        if next_subtree.is_terminus:
+            # As per docstring, the idea here is that we're converting every
+            # terminus into an insertion point for a different (pending) slot.
+            # Therefore it's no longer a terminus, since the slot is different.
+            next_subtree.is_terminus = False
+            _merge_into_slot_tree(
+                # Note: this is intentionally NOT the enclosing_cls! We're
+                # working on an offset tree here, and we need to make sure that
+                # we correctly report the class of the OFFSET root!
+                next_slot_type,
+                None,
+                next_subtree,
+                nested_pending_container.pending_root_node)
+
+            # Also note that _merge_into_slot_tree assumes that the root node
+            # it's given is already correct. Therefore we need to manually
+            # update it here, in case there were attributes defined on it
+            # directly, and not as nested nodes.
+            next_subtree.merge_fields_only(
+                nested_pending_container.pending_root_node)
+
+    # Okay, the transform is complete; now we just need to insert it into
+    # the actual pending slot tree for the enclosing template class.
+    if nested_pending_ref in enclosing_pending_ref_lookup:
+        dest_pending_tree_container = enclosing_pending_ref_lookup[
+            nested_pending_ref]
+    else:
+        dest_pending_tree_container = enclosing_pending_ref_lookup[
+            nested_pending_ref] = _PendingSlotTreeContainer(
+                pending_slot_type=nested_pending_ref,
+                pending_root_node=_PendingSlotTreeNode())
+
+    _merge_into_slot_tree(
+        enclosing_cls,
+        None,
+        dest_pending_tree_container.pending_root_node,
+        copied_tree)
 
 
 @dataclass(slots=True)
@@ -1893,6 +2510,7 @@ class _SlotTreeTraversalFrame[ET: _SlotTreeNode, IT: _SlotTreeNode]:
     next_subtree_index: int
     existing_subtree: ET
     insertion_subtree: IT
+    first_encounters: dict[TemplateClass | None, ET]
 
     @property
     def exhausted(self) -> bool:
