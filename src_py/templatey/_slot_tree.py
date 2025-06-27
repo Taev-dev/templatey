@@ -1065,9 +1065,14 @@ class _SlotTreeTraversalFrame[ET: SlotTreeNode, IT: SlotTreeNode]:
     insertion_subtree: IT
     first_encounters: dict[TemplateClass | None, ET]
 
+    _insertion_subtree_len: int = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self):
+        self._insertion_subtree_len = len(self.insertion_subtree)
+
     @property
     def exhausted(self) -> bool:
         """Returns True if the to_merge_subtree has been exhausted, and
         there are no more subtrees to merge.
         """
-        return self.next_subtree_index >= len(self.insertion_subtree)
+        return self.next_subtree_index >= self._insertion_subtree_len

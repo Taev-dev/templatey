@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import field
 
+from templatey._slot_tree import SlotTreeNode
 from templatey._types import TemplateClass
 from templatey._types import TemplateInstanceID
 from templatey._types import TemplateParamsInstance
@@ -39,10 +41,10 @@ class TemplateProvenanceNode:
     # The reason to have both the instance and the instance ID is so that we
     # can have hashability of the ID while not imposing an API on the instances
     instance_id: TemplateInstanceID
-    instance: TemplateParamsInstance = field(compare=False)
+    instance: TemplateParamsInstance = field(compare=False, repr=False)
 
 
-class TemplateProvenance(tuple[TemplateProvenanceNode]):
+class TemplateProvenance(tuple[TemplateProvenanceNode, ...]):
 
     def bind_content(
             self,
@@ -137,3 +139,155 @@ class TemplateProvenance(tuple[TemplateProvenanceNode]):
                 self[-1].instance, name)
 
         return value
+
+    @classmethod
+    def from_slot_tree(
+            cls,
+            root_template_instance: TemplateParamsInstance,
+            root_slot_tree: SlotTreeNode,
+            provenance_offset: TemplateProvenanceNode | None = None,
+            ) -> list[TemplateProvenance]:
+        """Given a root template instance, walks the passed slot tree,
+        finding all terminus points. Returns them as a list of
+        provenance instances.
+
+        Note that you must choose the correct slot tree from the
+        slot tree lookup in advance; this simply converts slot tree
+        terminus points into provenances based on a root template
+        instance: no more, no less.
+
+        TODO: it would be nice if we could pre-merge the slot trees during
+        template loading for the actual use cases (env functions invocations
+        and, eventually, dynamic slot types) so that we didn't need a separate
+        tree traversal for every template class. But for now, this is good
+        enough
+        """
+        provenances: list[TemplateProvenance] = []
+        stack: list[_TreeFlattenerFrame]
+        if provenance_offset is None:
+            stack = [
+                _TreeFlattenerFrame(
+                    active_instance=root_template_instance,
+                    active_subtree=root_slot_tree,
+                    target_subtree_index=0,
+                    target_instance_index=0,
+                    wip_provenance=TemplateProvenance([
+                        TemplateProvenanceNode(
+                            encloser_slot_key='',
+                            encloser_slot_index=-1,
+                            instance_id=id(root_template_instance),
+                            instance=root_template_instance)]))]
+        else:
+            stack = [
+                _TreeFlattenerFrame(
+                    active_instance=root_template_instance,
+                    active_subtree=root_slot_tree,
+                    target_subtree_index=0,
+                    target_instance_index=0,
+                    wip_provenance=TemplateProvenance([
+                        provenance_offset,
+                        TemplateProvenanceNode(
+                            encloser_slot_key='',
+                            encloser_slot_index=-1,
+                            instance_id=id(root_template_instance),
+                            instance=root_template_instance)]))]
+
+        while stack:
+            this_frame = stack[-1]
+            if this_frame.exhausted:
+                print(f'        exhausted {this_frame.active_subtree}')
+                stack.pop()
+
+                if this_frame.active_subtree.is_terminus:
+                    provenances.append(this_frame.wip_provenance)
+
+                continue
+
+            this_slot_route = this_frame.active_subtree[
+                this_frame.target_subtree_index]
+            this_slot_name, this_slot_type, this_subtree = this_slot_route
+            target_instance_index = this_frame.target_instance_index
+
+            # This is, in a way, a nested stack, but we're maintaining
+            # the stack state within the _TreeFlattenerFrame.
+            # At any rate, we use the zero-index to memoize some values on
+            # the stack frame.
+            if target_instance_index == 0:
+                target_instances = getattr(
+                    this_frame.active_instance,
+                    this_slot_name)
+                target_instances_count = len(target_instances)
+
+                # Check in advance if there are no target instances at all,
+                # and if so, skip the whole thing. This isn't just for
+                # performance; the processing logic depends on it.
+                if target_instances_count > 0:
+                    this_frame.target_instances_count = target_instances_count
+                    this_frame.target_instances = target_instances
+                else:
+                    # Note: this is critical! Otherwise we'll infinitely loop.
+                    this_frame.target_subtree_index += 1
+                    continue
+
+            else:
+                target_instances_count = this_frame.target_instances_count
+                # We've exhausted the target instances; reset the state for
+                # the next slot tree route and then continue.
+                if this_frame.target_instance_index >= target_instances_count:
+                    # Note: we're deliberately skipping the target instances
+                    # themselves, because it'll just get overwritten the next
+                    # time around, so we can save ourselves an operation.
+                    this_frame.target_instances_count = 0
+                    this_frame.target_instance_index = 0
+                    # Note: this is critical! Otherwise we'll infinitely loop.
+                    this_frame.target_subtree_index += 1
+                    continue
+
+                # We still have some instances to target; normalize the state
+                # so that we can operate on them.
+                target_instances = this_frame.target_instances
+
+            # Okay, status check: we have our stack frame state configured
+            # correctly, and we have target instances to check.
+            instance_to_check = target_instances[target_instance_index]
+            # Note: exact match here; not subclassing! Subclassing breaks too
+            # many things, so we don't support it.
+            if type(instance_to_check) is this_slot_type:
+                print(f'        appending frame {this_slot_name}, {this_slot_type}')
+                stack.append(_TreeFlattenerFrame(
+                    active_instance=instance_to_check,
+                    active_subtree=this_subtree,
+                    target_subtree_index=0,
+                    target_instance_index=0,
+                    wip_provenance=TemplateProvenance([
+                        *this_frame.wip_provenance,
+                        TemplateProvenanceNode(
+                            encloser_slot_key=this_slot_name,
+                            encloser_slot_index=target_instance_index,
+                            instance_id=id(instance_to_check),
+                            instance=instance_to_check)])))
+
+            this_frame.target_instance_index += 1
+
+        return provenances
+
+
+@dataclass(slots=True)
+class _TreeFlattenerFrame:
+    active_instance: TemplateParamsInstance
+    active_subtree: SlotTreeNode
+    target_subtree_index: int
+    target_instance_index: int
+    target_instances_count: int = field(kw_only=True, default=0)
+    target_instances: Sequence[TemplateParamsInstance] = field(
+        kw_only=True, init=False)
+    wip_provenance: TemplateProvenance
+
+    _active_subtree_len: int = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self):
+        self._active_subtree_len = len(self.active_subtree)
+
+    @property
+    def exhausted(self) -> bool:
+        return self.target_subtree_index >= self._active_subtree_len
