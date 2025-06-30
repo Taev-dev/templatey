@@ -8,7 +8,6 @@ import string
 from collections import defaultdict
 from collections.abc import Collection
 from collections.abc import Generator
-from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Mapping
 from dataclasses import dataclass

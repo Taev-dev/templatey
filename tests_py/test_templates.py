@@ -10,8 +10,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from templatey._forwardrefs import PENDING_FORWARD_REFS
-from templatey._slot_tree import SlotTreeNode
-from templatey._slot_tree import SlotTreeRoute
 from templatey.templates import Content
 from templatey.templates import Slot
 from templatey.templates import TemplateIntersectable
