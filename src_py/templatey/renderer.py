@@ -282,15 +282,8 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
 
             elif isinstance(next_part, InterpolatedFunctionCall):
                 render_frame.part_index += 1
-                print('\n~~~~~')
-                print('\n'.join(
-                    f'    {key}' for key in context.function_precall))
-                print('...')
-                print(f'    {_get_precall_cache_key(render_frame.provenance, next_part)}')
-                print('~~~~~\n')
                 execution_result = context.function_precall[
                     _get_precall_cache_key(render_frame.provenance, next_part)]
-                print('    ^^ (success!)')
                 nested_render_node = _build_render_frame_for_func_result(
                     render_frame.instance,
                     render_frame.provenance,
@@ -301,10 +294,72 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                 if nested_render_node is not None:
                     render_stack.append(nested_render_node)
 
+            # Similar to slots, but different enough that it warrants a
+            # separate approach. Trust me, I tried to unify them, and 1. I
+            # never got it fully working, 2. it was a pretty big hack (a
+            # virtual slot mechanism with some __getattr__ shenanigans), and
+            # 3. it created way more problems than it was worth.
+            # More info in the docstring for _InjectedInstanceContainer.
+            elif isinstance(next_part, _InjectedInstanceContainer):
+                render_frame.part_index += 1
+                injected_instance = next_part.instance
+                # Note that this needs to support both union slot
+                # types, and (eventually) dynamic slot types, hence
+                # doing this on every iteration instead of
+                # precalculating it for the whole interpolated slot
+                injected_instance_preload = context.template_preload[
+                    type(injected_instance)]
+                injected_instance_xable = cast(
+                    TemplateIntersectable, injected_instance)
+                render_stack.append(
+                    _RenderStackFrame(
+                        instance=injected_instance,
+                        parts=injected_instance_preload.parts,
+                        part_count=injected_instance_preload.part_count,
+                        config=injected_instance_xable._templatey_config,
+                        signature=injected_instance_xable._templatey_signature,
+                        # Note that the correct ``from_injection`` value is
+                        # added when creating the current stack frame.
+                        provenance=render_frame.provenance.with_appended(
+                            ProvenanceNode(
+                                encloser_slot_key='',
+                                encloser_slot_index=-1,
+                                instance_id=id(injected_instance),
+                                instance=injected_instance),),
+                        prerenderers=
+                            injected_instance_xable._templatey_prerenderers))
+
+            else:
+                raise TypeError(
+                    'Templatey internal error: unknown template part!',
+                    next_part)
+
         # Note: this could be eg a lookup error because of a missing variable.
         # This isn't redundant with the error collection within prepopulation.
         except Exception as exc:
             error_collector.append(exc)
+
+
+@dataclass(slots=True)
+class _InjectedInstanceContainer:
+    """When env functions inject instances of templates, the render
+    stack gets into a bit of a weird state. We want to avoid needing to
+    extend the stack by one for each and every injected template and/or
+    stringified value that the function returned. But we can't modify
+    the existing parts of a frame; first, it's a sometimes (always?) a
+    tuple, but more importantly, it would screw up our entire indexing
+    mechanism.
+
+    In theory we could add a "pending injections" sub-stack or something
+    to the _RenderStackFrame, but then we'd be stuck checking for that
+    during every single iteration of the render driver loop.
+
+    So instead, we do this: wrap the instance into a container, and
+    then (as the LAST, and therefore SLOWEST, check in the render driver
+    loop) we can check for the container, and have special logic for
+    handling them there.
+    """
+    instance: TemplateParamsInstance
 
 
 @dataclass(slots=True)
@@ -319,13 +374,14 @@ class _RenderStackFrame:
         | InterpolatedSlot
         | InterpolatedContent
         | InterpolatedVariable
-        | InterpolatedFunctionCall]
+        | InterpolatedFunctionCall
+        | _InjectedInstanceContainer]
 
     _: KW_ONLY
     part_count: int
     part_index: int = field(default=0, init=False)
     slot_instance_count: int = field(default=0, init=False)
-    slot_instance_index: int = field(default=0)
+    slot_instance_index: int = field(default=0, init=False)
     slot_instances: Sequence[TemplateParamsInstance] = field(init=False)
 
     @property
@@ -611,7 +667,7 @@ def _build_render_frame_for_func_result(  # noqa: C901
     returns it (or None, if there was an error).
     """
     injected_templates: list[tuple[int, TemplateParamsInstance]] = []
-    resulting_parts: list[str | InterpolatedSlot] = []
+    resulting_parts: list[str | _InjectedInstanceContainer] = []
     if execution_result.exc is None:
         if execution_result.retval is None:
             raise TypeError(
@@ -647,38 +703,22 @@ def _build_render_frame_for_func_result(  # noqa: C901
             from_exc=execution_result.exc))
 
     if injected_templates:
-        virtual_slots: dict[str, tuple[TemplateParamsInstance]] = {}
-
         for index, template_instance in injected_templates:
-            virtual_slot_name = (
-                f'_virtual_{abstract_call.name}_{abstract_call.part_index}')
-            virtual_slots[virtual_slot_name] = (template_instance,)
-            resulting_parts[index] = InterpolatedSlot(
-                part_index=index,
-                name=virtual_slot_name,
-                params={},
-                config=EMPTY_INTERPOLATION_CONFIG)
+            resulting_parts[index] = _InjectedInstanceContainer(
+                template_instance)
 
-        backstop_instance = EmptyTemplate(virtual_slots=virtual_slots)
         return _RenderStackFrame(
             parts=resulting_parts,
             part_count=len(resulting_parts),
             config=EMPTY_TEMPLATE_XABLE._templatey_config,
             signature=EMPTY_TEMPLATE_XABLE._templatey_signature,
-            provenance=Provenance(
-                (
-                    ProvenanceNode(
-                        encloser_slot_key='',
-                        encloser_slot_index=-1,
-                        # Note the deliberate mismatch here. We want to use the
-                        # instance ID from the enclosing instance; that makes
-                        # sure that it's available during prepopulation AND
-                        # rendering. But we still need a way to access virtual
-                        # slots, so we pass it the backstop instance instead.
-                        instance_id=id(enclosing_instance),
-                        instance=backstop_instance),),
-                from_injection=enclosing_provenance),
-            instance=backstop_instance,
+            # Note: keep this empty here, because we need the instance info
+            # to match the injected template, and the whole idea here is to
+            # avoid a bunch of extraneous stack frames. We'll add in the
+            # correct initial node in the render driver code, where we deal
+            # with _InjectedInstanceContainers
+            provenance=Provenance(from_injection=enclosing_provenance),
+            instance=EMPTY_TEMPLATE_INSTANCE,
             prerenderers=EMPTY_TEMPLATE_XABLE._templatey_prerenderers)
 
     elif resulting_parts:

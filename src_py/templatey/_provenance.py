@@ -82,7 +82,7 @@ class Provenance:
             # We do this so that env funcs that inject templates don't try
             # to continue looking up the provenance tree for slots that don't
             # actually exist.
-            if hasattr(template_class, '_TEMPLATEY_VIRTUAL_INSTANCE'):
+            if hasattr(template_class, '_TEMPLATEY_EMPTY_INSTANCE'):
                 break
 
             encloser_template = template_preload[template_class]
@@ -130,7 +130,7 @@ class Provenance:
             # We do this so that env funcs that inject templates don't try
             # to continue looking up the provenance tree for slots that don't
             # actually exist.
-            if hasattr(template_class, '_TEMPLATEY_VIRTUAL_INSTANCE'):
+            if hasattr(template_class, '_TEMPLATEY_EMPTY_INSTANCE'):
                 break
 
             encloser_template = template_preload[template_class]
@@ -198,7 +198,6 @@ class Provenance:
         while stack:
             this_frame = stack[-1]
             if this_frame.exhausted:
-                print(f'        exhausted {this_frame.active_subtree}')
                 stack.pop()
 
                 if this_frame.active_subtree.is_terminus:
