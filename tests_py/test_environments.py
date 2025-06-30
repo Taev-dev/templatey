@@ -7,6 +7,7 @@ from unittest.mock import patch
 import anyio
 import pytest
 
+from templatey._provenance import Provenance
 from templatey.environments import RenderEnvironment
 from templatey.environments import _TemplateFunctionContainer
 from templatey.exceptions import MismatchedTemplateEnvironment
@@ -529,7 +530,8 @@ class TestRenderEnvironment:
             name='func_with_starrings',
             args=['foo'],
             kwargs={'bar': 'baz'},
-            result_key=object())
+            result_key=object(),
+            provenance=Provenance())
 
         result = render_env.execute_env_function_sync(request)
         assert isinstance(result, FuncExecutionResult)
@@ -546,7 +548,8 @@ class TestRenderEnvironment:
             name='func_with_starrings_async',
             args=['foo'],
             kwargs={'bar': 'baz'},
-            result_key=object())
+            result_key=object(),
+            provenance=Provenance())
 
         result = await render_env.execute_env_function_async(request)
         assert isinstance(result, FuncExecutionResult)

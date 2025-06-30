@@ -52,9 +52,6 @@ _ID_PRNG: ContextVar[Random] = ContextVar('_ID_PRNG', default=Random())  # noqa:
 _ID_BITS = 128
 
 
-BACKSTOP_TEMPLATE_INSTANCE_ID = 0
-
-
 def create_templatey_id() -> int:
     """Templatey IDs are unique identifiers (theoretically, absent
     birthday collisions) that we currently use in two places:

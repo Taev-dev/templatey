@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import KW_ONLY
 from dataclasses import dataclass
 from dataclasses import field
 
@@ -14,8 +15,8 @@ from templatey.parser import ParsedTemplateResource
 
 
 @dataclass(slots=True, frozen=True)
-class TemplateProvenanceNode:
-    """TemplateProvenanceNode instances are unique to the exact location
+class ProvenanceNode:
+    """ProvenanceNode instances are unique to the exact location
     on the exact render tree of a particular template instance. If the
     template instance gets reused within the same render tree, it will
     have multiple provenance nodes. And each different slot in an
@@ -44,7 +45,20 @@ class TemplateProvenanceNode:
     instance: TemplateParamsInstance = field(compare=False, repr=False)
 
 
-class TemplateProvenance(tuple[TemplateProvenanceNode, ...]):
+@dataclass(slots=True, frozen=True)
+class Provenance:
+    slotpath: tuple[ProvenanceNode, ...] = field(default=())
+    _: KW_ONLY
+    from_injection: Provenance | None = None
+
+    # Used for memoization
+    _hash: int | None = field(
+        default=None, compare=False, init=False, repr=False)
+
+    def with_appended(self, node_to_append: ProvenanceNode) -> Provenance:
+        return Provenance(
+            (*self.slotpath, node_to_append),
+            from_injection=self.from_injection)
 
     def bind_content(
             self,
@@ -56,13 +70,14 @@ class TemplateProvenance(tuple[TemplateProvenanceNode, ...]):
         overrides to the content. If none are found, it returns the
         value from the childmost instance in the provenance.
         """
+        slotpath = self.slotpath
         # We use the literal ellipsis type as a sentinel for values not being
         # added yet, so we might as well just continue the trend!
-        current_provenance_node = self[-1]
+        current_provenance_node = slotpath[-1]
         value = getattr(current_provenance_node.instance, name, ...)
         encloser_param_name = name
         encloser_slot_key = current_provenance_node.encloser_slot_key
-        for encloser in reversed(self[0:-1]):
+        for encloser in reversed(slotpath[0:-1]):
             template_class = type(encloser.instance)
             # We do this so that env funcs that inject templates don't try
             # to continue looking up the provenance tree for slots that don't
@@ -89,7 +104,7 @@ class TemplateProvenance(tuple[TemplateProvenanceNode, ...]):
         if value is ...:
             raise KeyError(
                 'No value found for content with name at slot!',
-                self[-1].instance, name)
+                slotpath[-1].instance, name)
 
         return value
 
@@ -103,13 +118,14 @@ class TemplateProvenance(tuple[TemplateProvenanceNode, ...]):
         overrides to the variable. If none are found, it returns the
         value from the childmost instance in the provenance.
         """
+        slotpath = self.slotpath
         # We use the literal ellipsis type as a sentinel for values not being
         # added yet, so we might as well just continue the trend!
-        current_provenance_node = self[-1]
+        current_provenance_node = slotpath[-1]
         value = getattr(current_provenance_node.instance, name, ...)
         encloser_param_name = name
         encloser_slot_key = current_provenance_node.encloser_slot_key
-        for encloser in reversed(self[0:-1]):
+        for encloser in reversed(slotpath[0:-1]):
             template_class = type(encloser.instance)
             # We do this so that env funcs that inject templates don't try
             # to continue looking up the provenance tree for slots that don't
@@ -136,7 +152,7 @@ class TemplateProvenance(tuple[TemplateProvenanceNode, ...]):
         if value is ...:
             raise KeyError(
                 'No value found for variable with name at slot!',
-                self[-1].instance, name)
+                slotpath[-1].instance, name)
 
         return value
 
@@ -145,8 +161,8 @@ class TemplateProvenance(tuple[TemplateProvenanceNode, ...]):
             cls,
             root_template_instance: TemplateParamsInstance,
             root_slot_tree: SlotTreeNode,
-            provenance_offset: TemplateProvenanceNode | None = None,
-            ) -> list[TemplateProvenance]:
+            from_injection: Provenance | None,
+            ) -> list[Provenance]:
         """Given a root template instance, walks the passed slot tree,
         finding all terminus points. Returns them as a list of
         provenance instances.
@@ -162,35 +178,22 @@ class TemplateProvenance(tuple[TemplateProvenanceNode, ...]):
         tree traversal for every template class. But for now, this is good
         enough
         """
-        provenances: list[TemplateProvenance] = []
+        provenances: list[Provenance] = []
         stack: list[_TreeFlattenerFrame]
-        if provenance_offset is None:
-            stack = [
-                _TreeFlattenerFrame(
-                    active_instance=root_template_instance,
-                    active_subtree=root_slot_tree,
-                    target_subtree_index=0,
-                    target_instance_index=0,
-                    wip_provenance=TemplateProvenance([
-                        TemplateProvenanceNode(
+        stack = [
+            _TreeFlattenerFrame(
+                active_instance=root_template_instance,
+                active_subtree=root_slot_tree,
+                target_subtree_index=0,
+                target_instance_index=0,
+                wip_provenance=Provenance(
+                    (
+                        ProvenanceNode(
                             encloser_slot_key='',
                             encloser_slot_index=-1,
                             instance_id=id(root_template_instance),
-                            instance=root_template_instance)]))]
-        else:
-            stack = [
-                _TreeFlattenerFrame(
-                    active_instance=root_template_instance,
-                    active_subtree=root_slot_tree,
-                    target_subtree_index=0,
-                    target_instance_index=0,
-                    wip_provenance=TemplateProvenance([
-                        provenance_offset,
-                        TemplateProvenanceNode(
-                            encloser_slot_key='',
-                            encloser_slot_index=-1,
-                            instance_id=id(root_template_instance),
-                            instance=root_template_instance)]))]
+                            instance=root_template_instance),),
+                    from_injection=from_injection))]
 
         while stack:
             this_frame = stack[-1]
@@ -253,23 +256,34 @@ class TemplateProvenance(tuple[TemplateProvenanceNode, ...]):
             # Note: exact match here; not subclassing! Subclassing breaks too
             # many things, so we don't support it.
             if type(instance_to_check) is this_slot_type:
-                print(f'        appending frame {this_slot_name}, {this_slot_type}')
                 stack.append(_TreeFlattenerFrame(
                     active_instance=instance_to_check,
                     active_subtree=this_subtree,
                     target_subtree_index=0,
                     target_instance_index=0,
-                    wip_provenance=TemplateProvenance([
-                        *this_frame.wip_provenance,
-                        TemplateProvenanceNode(
-                            encloser_slot_key=this_slot_name,
-                            encloser_slot_index=target_instance_index,
-                            instance_id=id(instance_to_check),
-                            instance=instance_to_check)])))
+                    wip_provenance=Provenance(
+                        (
+                            *this_frame.wip_provenance.slotpath,
+                            ProvenanceNode(
+                                encloser_slot_key=this_slot_name,
+                                encloser_slot_index=target_instance_index,
+                                instance_id=id(instance_to_check),
+                                instance=instance_to_check)),
+                        from_injection=from_injection)))
 
             this_frame.target_instance_index += 1
 
         return provenances
+
+    def __hash__(self) -> int:
+        memoized = self._hash
+        if memoized is None:
+            retval = hash(self.slotpath) ^ hash(self.from_injection)
+            object.__setattr__(self, '_hash', retval)
+            return retval
+
+        else:
+            return memoized
 
 
 @dataclass(slots=True)
@@ -281,7 +295,7 @@ class _TreeFlattenerFrame:
     target_instances_count: int = field(kw_only=True, default=0)
     target_instances: Sequence[TemplateParamsInstance] = field(
         kw_only=True, init=False)
-    wip_provenance: TemplateProvenance
+    wip_provenance: Provenance
 
     _active_subtree_len: int = field(init=False, repr=False, compare=False)
 

@@ -379,6 +379,7 @@ class RenderEnvironment:
         for env_request in render_driver(
             template_instance, output, error_collector
         ):
+            # TODO: ... make all of this parallel! duh doy!
             for to_load in env_request.to_load:
                 env_request.results_loaded[to_load] = await self.load_async(
                     to_load)

@@ -699,6 +699,19 @@ class TestApiE2E:
         print('\n\nPageTemplate')
         print(PageTemplate._templatey_signature.stringify_all())
 
+        print('\n\nALL SHOULD BE LOADED!!!\n\n')
+        
+        '''
+        
+        
+        problem: something is still getting stripped out of the
+        final slot tree, and there's still something pending for the div template
+        on the page template
+        
+        
+        
+        '''
+
         render_env = RenderEnvironment(
             env_functions=(add_class,),
             template_loader=DictTemplateLoader(
@@ -708,8 +721,6 @@ class TestApiE2E:
                     'nav_section': nav_section,
                     'nav_item': nav_item,
                     'nav_link': nav_link}))
-
-        assert False
 
         render_result = render_env.render_sync(
             PageTemplate(

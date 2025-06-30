@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import itertools
 from collections import defaultdict
-from collections import deque
 from collections.abc import Iterable
-from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import field
 from types import UnionType
@@ -14,8 +11,7 @@ from templatey._forwardrefs import PENDING_FORWARD_REFS
 from templatey._forwardrefs import ForwardReferenceProxyClass
 from templatey._forwardrefs import ForwardRefLookupKey
 from templatey._forwardrefs import is_forward_reference_proxy
-from templatey._provenance import TemplateProvenance
-from templatey._provenance import TemplateProvenanceNode
+from templatey._provenance import Provenance
 from templatey._slot_tree import ConcreteSlotTreeNode
 from templatey._slot_tree import PendingSlotTreeContainer
 from templatey._slot_tree import PendingSlotTreeNode
@@ -23,20 +19,12 @@ from templatey._slot_tree import SlotTreeNode
 from templatey._slot_tree import SlotTreeRoute
 from templatey._slot_tree import merge_into_slot_tree
 from templatey._slot_tree import update_encloser_with_trees_from_slot
-from templatey._types import BACKSTOP_TEMPLATE_INSTANCE_ID
 from templatey._types import TemplateClass
 from templatey._types import TemplateInstanceID
 from templatey._types import TemplateParamsInstance
-from templatey.parser import InterpolatedFunctionCall
-from templatey.parser import ParsedTemplateResource
 
-type GroupedTemplateInvocations = dict[TemplateClass, list[TemplateProvenance]]
+type GroupedTemplateInvocations = dict[TemplateClass, list[Provenance]]
 type TemplateLookupByID = dict[TemplateInstanceID, TemplateParamsInstance]
-# Note that there's no need for an abstract version of this, at least not right
-# now, because in order to calculate it, we'd need to know the template body,
-# which doesn't happen until we already know the template instance, which means
-# we can skip ahead to the concrete version.
-type EnvFuncInvocation = tuple[TemplateProvenance, InterpolatedFunctionCall]
 type _SlotAnnotation = (
     TemplateClass
     | UnionType
@@ -271,60 +259,6 @@ class TemplateSignature:
                 concrete_slots.append((slot_name, flattened_slot_annotation))
 
         return concrete_slots, pending_refs
-
-    def extract_function_invocations(
-            self,
-            root_template_instance: TemplateParamsInstance,
-            template_preload: dict[TemplateClass, ParsedTemplateResource]
-            ) -> list[EnvFuncInvocation]:
-        """Looks at all included abstract function invocations, and
-        generates lists of their concrete invocations, based on both the
-        actual values of slots at the template instances, as well as the
-        template definition provided in template_preload.
-        """
-        invocations: list[EnvFuncInvocation] = []
-        root_template_cls = type(root_template_instance)
-        all_slot_tree_items: Iterable[tuple[TemplateClass, SlotTreeNode]]
-        slot_tree_lookup = self._slot_tree_lookup
-        if root_template_cls in slot_tree_lookup:
-            all_slot_tree_items = slot_tree_lookup.items()
-
-        else:
-            all_slot_tree_items = itertools.chain(
-                slot_tree_lookup.items(),
-                [(root_template_cls, SlotTreeNode(is_terminus=True))])
-
-        # Keep in mind that the slot tree contains all included slot classes
-        # (recursively), not just the ones at the root_template_instance.
-        # Our goal here is:
-        # 1.. find all template classes with abstract function calls
-        # 2.. build provenances for all invocations of those template classes
-        # 3.. combine (product) those provenances with all of the abstract
-        #     function calls at that template class
-        print('\n$$$$$ About to extract')
-        for template_class, slot_tree_root in all_slot_tree_items:
-            print(f'    checking {template_class}...')
-            abstract_calls = template_preload[template_class].function_calls
-
-            # Constructing a provenance is relatively expensive, so we only
-            # want to do it if we actually have some function calls within the
-            # template
-            if abstract_calls:
-                print('    abstract calls found')
-                provenances = TemplateProvenance.from_slot_tree(
-                    root_template_instance,
-                    slot_tree_root)
-                print(f'    {provenances=}')
-
-                # Oh the humanity, oh the combinatorics!
-                invocations.extend(itertools.product(
-                    provenances,
-                    itertools.chain.from_iterable(abstract_calls.values())))
-
-        print('\n!!!!!!!!!!!!!!!')
-        print(invocations)
-        print('!!!!!!!!!!!!!!!\n')
-        return invocations
 
     def resolve_forward_ref(
             self,
