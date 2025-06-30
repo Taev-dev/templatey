@@ -665,52 +665,19 @@ class TestApiE2E:
         class NavSectionTemplate:
             nav_items: Slot[NavItemTemplate]
 
-        print('\n\nNav Section template')
-        print(NavSectionTemplate._templatey_signature.stringify_all())
-
         @template(html, 'nav_item')
         class NavItemTemplate:
             nav_item_content: Slot[NavSectionTemplate | NavLinkTemplate]
-
-        print('\n\nNav Section template')
-        print(NavSectionTemplate._templatey_signature.stringify_all())
 
         @template(html, 'nav_link')
         class NavLinkTemplate:
             target: Content[str]
             name: Var[str]
 
-        print('\n\nNav Section template')
-        print(NavSectionTemplate._templatey_signature.stringify_all())
-
         @template(html, 'div')
         class DivTemplate:
             div: Slot[DivTemplate]
             body: Var[str | None] = None
-
-        print('\n\nDiv template')
-        print(DivTemplate._templatey_signature.stringify_all())
-        print('\n\nNav link template')
-        print(NavLinkTemplate._templatey_signature.stringify_all())
-        print('\n\nNavItemTemplate')
-        print(NavItemTemplate._templatey_signature.stringify_all())
-        print('\n\nNav Section template')
-        print(NavSectionTemplate._templatey_signature.stringify_all())
-        print('\n\nPageTemplate')
-        print(PageTemplate._templatey_signature.stringify_all())
-
-        print('\n\nALL SHOULD BE LOADED!!!\n\n')
-        
-        '''
-        
-        
-        problem: something is still getting stripped out of the
-        final slot tree, and there's still something pending for the div template
-        on the page template
-        
-        
-        
-        '''
 
         render_env = RenderEnvironment(
             env_functions=(add_class,),

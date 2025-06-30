@@ -32,8 +32,8 @@ from typing_extensions import TypeIs
 
 from templatey._annotations import InterfaceAnnotation
 from templatey._annotations import InterfaceAnnotationFlavor
+from templatey._forwardrefs import ForwardRefGeneratingNamespaceLookup
 from templatey._forwardrefs import ForwardRefLookupKey
-from templatey._forwardrefs import _ForwardRefGeneratingNamespaceLookup
 from templatey._forwardrefs import extract_frame_scope_id
 from templatey._forwardrefs import resolve_forward_references
 from templatey._signature import TemplateSignature
@@ -442,7 +442,7 @@ def make_template_definition[T: type](
         # we need to recover the existing check for the actual globals, since
         # otherwise **all** global names would be overwritten by the forward
         # reference.
-        forwardref_lookup = _ForwardRefGeneratingNamespaceLookup(
+        forwardref_lookup = ForwardRefGeneratingNamespaceLookup(
             template_module=template_module,
             template_scope_id=template_scope_id)
         # This is the same as the current implementation of get_type_hints

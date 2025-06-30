@@ -979,8 +979,9 @@ def _extend_pending_slot_tree(
         ++  set ``is_terminus`` to False
         ++  insert a copy of the nested root tree
     """
-    copied_tree = _copy_slot_tree(
-        enclosing_slot_tree_lookup[nested_cls],
+    src_concrete_tree = enclosing_slot_tree_lookup[nested_cls]
+    dest_copied_tree = _copy_slot_tree(
+        src_concrete_tree,
         with_node_type=PendingSlotTreeNode)
     # Note that it's not an issue that this doesn't track the stack, because
     # we aren't changing the structure of the existing tree at all.
@@ -992,12 +993,13 @@ def _extend_pending_slot_tree(
     # won't break anything, so we might as well.
     stack: \
         list[
-            _SlotTreeTraversalFrame[PendingSlotTreeNode,
-            PendingSlotTreeNode]] = [_SlotTreeTraversalFrame(
-                next_subtree_index=0,
-                existing_subtree=copied_tree,
-                insertion_subtree=copied_tree,
-                first_encounters={})]
+            _SlotTreeTraversalFrame[
+                PendingSlotTreeNode, ConcreteSlotTreeNode]] = [
+        _SlotTreeTraversalFrame(
+            next_subtree_index=0,
+            existing_subtree=dest_copied_tree,
+            insertion_subtree=src_concrete_tree,
+            first_encounters={})]
 
     while stack:
         current_stack_frame = stack[-1]
@@ -1007,7 +1009,12 @@ def _extend_pending_slot_tree(
 
         next_slot_route = current_stack_frame.insertion_subtree[
             current_stack_frame.next_subtree_index]
-        __, next_slot_type, next_subtree = next_slot_route
+        next_slot_name, next_slot_type, next_subtree = next_slot_route
+        # Note that we can't rely upon the indices being the same, because as
+        # soon as we make an insertion, they'll drift out of sync
+        target_subtree = current_stack_frame.existing_subtree.get_route_for(
+            next_slot_name, next_slot_type).subtree
+
         # Do this ASAP so that we don't accidentally forget it somehow
         current_stack_frame.next_subtree_index += 1
 
@@ -1015,6 +1022,9 @@ def _extend_pending_slot_tree(
         # of our transforms and insertions, because it's always recursive.
         # Doesn't matter where on the tree we are. We've already fixed this
         # node, period, end of story.
+        # (Don't forget that the weird doubling-back we do only applies to the
+        # next EXISTING subtree, but still advances the next (insertion)
+        # subtree. So we're safe in that regard.)
         if next_subtree.id_ in encountered_node_ids:
             continue
         encountered_node_ids.add(next_subtree.id_)
@@ -1023,22 +1033,26 @@ def _extend_pending_slot_tree(
             # As per docstring, the idea here is that we're converting every
             # terminus into an insertion point for a different (pending) slot.
             # Therefore it's no longer a terminus, since the slot is different.
-            next_subtree.is_terminus = False
+            target_subtree.is_terminus = False
             merge_into_slot_tree(
                 # Note: this is intentionally NOT the enclosing_cls! We're
                 # working on an offset tree here, and we need to make sure that
                 # we correctly report the class of the OFFSET root!
                 next_slot_type,
                 None,
-                next_subtree,
+                target_subtree,
                 nested_pending_container.pending_root_node)
 
-            # Also note that merge_into_slot_tree assumes that the root node
-            # it's given is already correct. Therefore we need to manually
-            # update it here, in case there were attributes defined on it
-            # directly, and not as nested nodes.
-            next_subtree.merge_fields_only(
-                nested_pending_container.pending_root_node)
+        # Whether or not we found a terminus, we need to check all of the
+        # possibilities on the next subtree. (As a reminder, you can have a
+        # terminus that still has nested nodes!)
+        stack.append(_SlotTreeTraversalFrame(
+            next_subtree_index=0,
+            existing_subtree=target_subtree,
+            insertion_subtree=next_subtree,
+            # Allow the final merging to handle any culling; we don't need to
+            # do it here.
+            first_encounters={}))
 
     # Okay, the transform is complete; now we just need to insert it into
     # the actual pending slot tree for the enclosing template class.
@@ -1055,7 +1069,7 @@ def _extend_pending_slot_tree(
         enclosing_cls,
         None,
         dest_pending_tree_container.pending_root_node,
-        copied_tree)
+        dest_copied_tree)
 
 
 @dataclass(slots=True)

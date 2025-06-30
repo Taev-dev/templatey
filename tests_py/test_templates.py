@@ -10,6 +10,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from templatey._forwardrefs import PENDING_FORWARD_REFS
+from templatey._slot_tree import SlotTreeNode
+from templatey._slot_tree import SlotTreeRoute
 from templatey.templates import Content
 from templatey.templates import Slot
 from templatey.templates import TemplateIntersectable
@@ -450,6 +452,11 @@ class TestMakeTemplateDefinition:
         tree.
         """
         @template(fake_template_config, object())
+        class FakeTemplateFordref:
+            slot1: Slot[Baz | Foo | Bar]
+            slot2: Slot[Baz | Foo | Bar]
+
+        @template(fake_template_config, object())
         class Foo:
             bar_or_baz: Slot[Bar | Baz]
 
@@ -462,40 +469,53 @@ class TestMakeTemplateDefinition:
             value: Var[str]
 
         @template(fake_template_config, object())
-        class FakeTemplate:
+        class FakeTemplateBackref:
             slot1: Slot[Baz | Foo | Bar]
             slot2: Slot[Baz | Foo | Bar]
 
-        retval = cast(type[TemplateIntersectable], FakeTemplate)
-        signature = retval._templatey_signature
+        retval_backref = cast(type[TemplateIntersectable], FakeTemplateBackref)
+        retval_fordref = cast(type[TemplateIntersectable], FakeTemplateFordref)
+        signature_backref = retval_backref._templatey_signature
+        signature_fordref = retval_fordref._templatey_signature
 
-        assert len(signature.slot_names) == 2
-        assert 'slot1' in signature.slot_names
-        assert 'slot2' in signature.slot_names
-        foo_root_node = signature._slot_tree_lookup[Foo]
-        assert foo_root_node.has_route_for('slot1', Foo)
-        assert foo_root_node.has_route_for('slot2', Foo)
-        assert foo_root_node.has_route_for('slot1', Bar)
-        assert foo_root_node.has_route_for('slot2', Bar)
-        # Note: we're checking for nested descendants, so yes, the fact that
-        # we're looking in FakeTemplate._templatey_signature is deliberate
-        bar_root_node = signature._slot_tree_lookup[Bar]
-        assert bar_root_node.has_route_for('slot1', Foo)
-        assert bar_root_node.has_route_for('slot2', Foo)
-        assert bar_root_node.has_route_for('slot1', Bar)
-        assert bar_root_node.has_route_for('slot2', Bar)
-        # Note: we're checking for nested descendants, so yes, the fact that
-        # we're looking in FakeTemplate._templatey_signature is deliberate
-        baz_root_node = signature._slot_tree_lookup[Baz]
-        assert baz_root_node.has_route_for('slot1', Foo)
-        assert baz_root_node.has_route_for('slot2', Foo)
-        assert baz_root_node.has_route_for('slot1', Bar)
-        assert baz_root_node.has_route_for('slot2', Bar)
-        assert baz_root_node.has_route_for('slot1', Baz)
-        assert baz_root_node.has_route_for('slot2', Baz)
+        assert signature_backref.slot_names == {'slot1', 'slot2'}
+        assert signature_fordref.slot_names == {'slot1', 'slot2'}
+        assert set(signature_backref._slot_tree_lookup) == {Foo, Bar, Baz}
+        assert set(signature_fordref._slot_tree_lookup) == {Foo, Bar, Baz}
+        assert not signature_backref._pending_ref_lookup
+        assert not signature_fordref._pending_ref_lookup
 
-        print(signature.stringify_all())
-        assert False
+        # Hard-coding the expected tree is a LOT of tedious manual work, so
+        # instead we're just going to be as pragmatic as possible and just
+        # test backref against forward-ref
+        foo_root_backref = signature_backref._slot_tree_lookup[Foo]
+        foo_root_fordref = signature_backref._slot_tree_lookup[Foo]
+        assert foo_root_backref.is_equivalent(foo_root_fordref)
+        assert {slot.slot_path for slot in foo_root_backref} == {
+            ('slot1', Foo),
+            ('slot1', Bar),
+            ('slot2', Foo),
+            ('slot2', Bar),}
+
+        bar_root_backref = signature_backref._slot_tree_lookup[Bar]
+        bar_root_fordref = signature_backref._slot_tree_lookup[Bar]
+        assert bar_root_backref.is_equivalent(bar_root_fordref)
+        assert {slot.slot_path for slot in bar_root_backref} == {
+            ('slot1', Foo),
+            ('slot1', Bar),
+            ('slot2', Foo),
+            ('slot2', Bar),}
+
+        baz_root_backref = signature_backref._slot_tree_lookup[Baz]
+        baz_root_fordref = signature_backref._slot_tree_lookup[Baz]
+        assert baz_root_backref.is_equivalent(baz_root_fordref)
+        assert {slot.slot_path for slot in baz_root_backref} == {
+            ('slot1', Foo),
+            ('slot1', Bar),
+            ('slot1', Baz),
+            ('slot2', Baz),
+            ('slot2', Foo),
+            ('slot2', Bar),}
 
     def test_var_extraction(self):
         """Fields declared with Var[...] must be correctly detected
