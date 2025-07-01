@@ -4,6 +4,8 @@ them over when this moves to a dedicated repo.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pytest
 
 from templatey.environments import RenderEnvironment
@@ -19,6 +21,15 @@ from templatey.templates import TemplateConfig
 from templatey.templates import Var
 from templatey.templates import param
 from templatey.templates import template
+
+
+@dataclass
+class VarWithFormatting:
+    atom: str
+    repetitions: int
+
+    def __format__(self, format_spec: str) -> str:
+        return self.atom * self.repetitions
 
 
 class TestApiE2E:
@@ -603,8 +614,10 @@ class TestApiE2E:
 
         assert render_result == '<p>yes</p>&lt;no&gt;caught!'
 
-    def test_forward_reference_loop(self):
-        """Forward reference loops must render correctly.
+    def test_forward_reference_loop_with_formatted_var(self):
+        """Forward reference loops must render correctly. Variables
+        with __format__ declared must correctly use their rendered value
+        instead of a repr, str, or other such shenanigans.
         """
         def add_class():
             return ('mystyleclass',)
@@ -677,7 +690,7 @@ class TestApiE2E:
         @template(html, 'div')
         class DivTemplate:
             div: Slot[DivTemplate]
-            body: Var[str | None] = None
+            body: Var[VarWithFormatting | None] = None
 
         render_env = RenderEnvironment(
             env_functions=(add_class,),
@@ -697,9 +710,15 @@ class TestApiE2E:
                     DivTemplate(
                         div=[
                             DivTemplate(
-                                div=[DivTemplate(div=(), body='Mainline')]),
+                                div=[DivTemplate(
+                                    div=(),
+                                    body=VarWithFormatting(
+                                        'Mainline', repetitions=2))]),
                             DivTemplate(
-                                div=[DivTemplate(div=(), body='Sideline')])])],
+                                div=[DivTemplate(
+                                    div=(),
+                                    body=VarWithFormatting(
+                                        'Sideline', repetitions=3))])])],
                 nav=[
                     NavSectionTemplate(
                         nav_items=[
@@ -771,11 +790,11 @@ class TestApiE2E:
             <main>
                 <div class="mystyleclass">
                 <div class="mystyleclass">
-                <div class="mystyleclass">Mainline</div>
+                <div class="mystyleclass">MainlineMainline</div>
                 </div>
                 
                 <div class="mystyleclass">
-                <div class="mystyleclass">Sideline</div>
+                <div class="mystyleclass">SidelineSidelineSideline</div>
                 </div>
                 </div>
             </main>
