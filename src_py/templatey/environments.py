@@ -12,6 +12,8 @@ from typing import runtime_checkable
 
 from templatey._bootstrapping import PARSED_EMPTY_TEMPLATE
 from templatey._bootstrapping import EmptyTemplate
+from templatey._types import TemplateIntersectable
+from templatey._types import TemplateParamsInstance
 from templatey.exceptions import MismatchedRenderColor
 from templatey.exceptions import MismatchedTemplateEnvironment
 from templatey.exceptions import MismatchedTemplateSignature
@@ -22,8 +24,6 @@ from templatey.renderer import FuncExecutionRequest
 from templatey.renderer import FuncExecutionResult
 from templatey.renderer import render_driver
 from templatey.templates import InjectedValue
-from templatey.templates import TemplateIntersectable
-from templatey.templates import TemplateParamsInstance
 
 # Note: strings here will be escaped. InjectedValues may decide whether or not
 # escaping should be applied. Nested templates will not be escaped.

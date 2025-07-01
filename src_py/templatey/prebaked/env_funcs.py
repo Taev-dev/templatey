@@ -2,7 +2,7 @@ from typing import Annotated
 
 from docnote import ClcNote
 
-from templatey.templates import TemplateParamsInstance
+from templatey._types import TemplateParamsInstance
 
 
 def xml_attrify(

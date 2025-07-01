@@ -11,14 +11,12 @@ from collections.abc import Callable
 from collections.abc import Collection
 from collections.abc import Iterable
 from collections.abc import Mapping
-from collections.abc import Sequence
 from dataclasses import _MISSING_TYPE
 from dataclasses import Field
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import fields
 from textwrap import dedent
-from types import EllipsisType
 from types import FrameType
 from typing import Annotated
 from typing import Any
@@ -28,60 +26,21 @@ from typing import dataclass_transform
 from typing import overload
 
 from docnote import ClcNote
-from typing_extensions import TypeIs
 
-from templatey._annotations import InterfaceAnnotation
 from templatey._annotations import InterfaceAnnotationFlavor
 from templatey._forwardrefs import ForwardRefGeneratingNamespaceLookup
 from templatey._forwardrefs import ForwardRefLookupKey
 from templatey._forwardrefs import extract_frame_scope_id
 from templatey._forwardrefs import resolve_forward_references
 from templatey._signature import TemplateSignature
-from templatey._types import TemplateIntersectable
-from templatey._types import TemplateParamsInstance
+from templatey._types import Content
+from templatey._types import DynamicSlot
+from templatey._types import Slot
+from templatey._types import Var
 from templatey.interpolators import NamedInterpolator
 from templatey.parser import InterpolationConfig
 
 logger = logging.getLogger(__name__)
-
-
-# Technically, these should use the TemplateIntersectable from templates.py,
-# but since we can't define type intersections yet...
-type Slot[T: TemplateParamsInstance] = Annotated[
-    Sequence[T] | EllipsisType,
-    InterfaceAnnotation(InterfaceAnnotationFlavor.SLOT)]
-type Var[T] = Annotated[
-    T | EllipsisType,
-    InterfaceAnnotation(InterfaceAnnotationFlavor.VARIABLE)]
-type Content[T] = Annotated[
-    T,
-    InterfaceAnnotation(InterfaceAnnotationFlavor.CONTENT)]
-
-
-def is_template_class(cls: type) -> TypeIs[type[TemplateIntersectable]]:
-    """Rather than relying upon @runtime_checkable, which doesn't work
-    with protocols with ClassVars, we implement our own custom checker
-    here for narrowing the type against TemplateIntersectable. Note
-    that this also, I think, might be usable for some of the issues
-    re: the missing intersection type in python, though support might be
-    unreliable depending on which type checker is in use.
-    """
-    return (
-        hasattr(cls, '_templatey_config')
-        and hasattr(cls, '_templatey_resource_locator')
-        and hasattr(cls, '_templatey_signature')
-    )
-
-
-def is_template_instance(instance: object) -> TypeIs[TemplateIntersectable]:
-    """Rather than relying upon @runtime_checkable, which doesn't work
-    with protocols with ClassVars, we implement our own custom checker
-    here for narrowing the type against TemplateIntersectable. Note
-    that this also, I think, might be usable for some of the issues
-    re: the missing intersection type in python, though support might be
-    unreliable depending on which type checker is in use.
-    """
-    return is_template_class(type(instance))
 
 
 class VariableEscaper(Protocol):

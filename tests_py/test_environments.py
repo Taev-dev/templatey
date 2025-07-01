@@ -8,6 +8,9 @@ import anyio
 import pytest
 
 from templatey._provenance import Provenance
+from templatey._types import Slot
+from templatey._types import TemplateIntersectable
+from templatey._types import Var
 from templatey.environments import RenderEnvironment
 from templatey.environments import _TemplateFunctionContainer
 from templatey.exceptions import MismatchedTemplateEnvironment
@@ -23,9 +26,6 @@ from templatey.parser import parse
 from templatey.prebaked.loaders import DictTemplateLoader
 from templatey.renderer import FuncExecutionRequest
 from templatey.renderer import FuncExecutionResult
-from templatey.templates import Slot
-from templatey.templates import TemplateIntersectable
-from templatey.templates import Var
 from templatey.templates import template
 
 from templatey_testutils import fake_template_config

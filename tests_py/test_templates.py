@@ -10,12 +10,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from templatey._forwardrefs import PENDING_FORWARD_REFS
-from templatey.templates import Content
-from templatey.templates import Slot
-from templatey.templates import TemplateIntersectable
-from templatey.templates import Var
-from templatey.templates import is_template_class
-from templatey.templates import is_template_instance
+from templatey._types import Content
+from templatey._types import Slot
+from templatey._types import TemplateIntersectable
+from templatey._types import Var
+from templatey._types import is_template_class
+from templatey._types import is_template_instance
 from templatey.templates import make_template_definition
 from templatey.templates import template
 

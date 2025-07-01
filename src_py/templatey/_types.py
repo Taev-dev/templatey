@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import typing
+from collections.abc import Sequence
 from contextvars import ContextVar
 from random import Random
+from types import EllipsisType
+from typing import Annotated
 from typing import ClassVar
 from typing import NamedTuple
 from typing import Protocol
+
+from typing_extensions import TypeIs
+
+from templatey._annotations import InterfaceAnnotation
+from templatey._annotations import InterfaceAnnotationFlavor
 
 if typing.TYPE_CHECKING:
     from _typeshed import DataclassInstance
@@ -23,6 +31,49 @@ else:
 TemplateParamsInstance = DataclassInstance
 type TemplateClass = type[TemplateParamsInstance]
 type TemplateInstanceID = int
+
+
+# Technically, these should use the TemplateIntersectable from templates.py,
+# but since we can't define type intersections yet...
+type Slot[T: TemplateParamsInstance] = Annotated[
+    Sequence[T],
+    InterfaceAnnotation(InterfaceAnnotationFlavor.SLOT)]
+type Var[T] = Annotated[
+    T | EllipsisType,
+    InterfaceAnnotation(InterfaceAnnotationFlavor.VARIABLE)]
+type Content[T] = Annotated[
+    T,
+    InterfaceAnnotation(InterfaceAnnotationFlavor.CONTENT)]
+type DynamicSlot = Annotated[
+    Sequence[TemplateParamsInstance],
+    InterfaceAnnotation(InterfaceAnnotationFlavor.SLOT),
+    InterfaceAnnotation(InterfaceAnnotationFlavor.DYNAMIC)]
+
+
+def is_template_class(cls: type) -> TypeIs[type[TemplateIntersectable]]:
+    """Rather than relying upon @runtime_checkable, which doesn't work
+    with protocols with ClassVars, we implement our own custom checker
+    here for narrowing the type against TemplateIntersectable. Note
+    that this also, I think, might be usable for some of the issues
+    re: the missing intersection type in python, though support might be
+    unreliable depending on which type checker is in use.
+    """
+    return (
+        hasattr(cls, '_templatey_config')
+        and hasattr(cls, '_templatey_resource_locator')
+        and hasattr(cls, '_templatey_signature')
+    )
+
+
+def is_template_instance(instance: object) -> TypeIs[TemplateIntersectable]:
+    """Rather than relying upon @runtime_checkable, which doesn't work
+    with protocols with ClassVars, we implement our own custom checker
+    here for narrowing the type against TemplateIntersectable. Note
+    that this also, I think, might be usable for some of the issues
+    re: the missing intersection type in python, though support might be
+    unreliable depending on which type checker is in use.
+    """
+    return is_template_class(type(instance))
 
 
 class TemplateIntersectable(Protocol):

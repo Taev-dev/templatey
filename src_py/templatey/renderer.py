@@ -26,6 +26,9 @@ from templatey._provenance import ProvenanceNode
 from templatey._signature import TemplateSignature
 from templatey._slot_tree import SlotTreeNode
 from templatey._types import TemplateClass
+from templatey._types import TemplateIntersectable
+from templatey._types import TemplateParamsInstance
+from templatey._types import is_template_instance
 from templatey.exceptions import MismatchedTemplateSignature
 from templatey.exceptions import TemplateFunctionFailure
 from templatey.parser import InterpolatedContent
@@ -39,9 +42,6 @@ from templatey.parser import ParsedTemplateResource
 from templatey.templates import ComplexContent
 from templatey.templates import InjectedValue
 from templatey.templates import TemplateConfig
-from templatey.templates import TemplateIntersectable
-from templatey.templates import TemplateParamsInstance
-from templatey.templates import is_template_instance
 
 logger = logging.getLogger(__name__)
 
