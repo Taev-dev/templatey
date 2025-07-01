@@ -435,13 +435,7 @@ def make_template_definition[T: type](
             '''),
             exc_info=exc)
 
-        # There's a method to the madness here.
-        # globalns needs to be strictly a dict, because it gets delegated into
-        # ``eval``, which requires one. Which means we can only use the localns
-        # to intercept missing forward references. But that, then, means that
-        # we need to recover the existing check for the actual globals, since
-        # otherwise **all** global names would be overwritten by the forward
-        # reference.
+        # If you're confused, keep reading the comments below.
         forwardref_lookup = ForwardRefGeneratingNamespaceLookup(
             template_module=template_module,
             template_scope_id=template_scope_id)
@@ -451,9 +445,49 @@ def make_template_definition[T: type](
         template_globals = getattr(
             sys.modules.get(template_module, None), '__dict__', {})
 
+        # Okay, so... this is non-intuitive, to be sure. And if you fail to
+        # do this, you'll have really perfidious bugs, because anything that
+        # was a valid reference within the temporary namespace created inside
+        # the class creation -- **including the class itself** -- will be
+        # converted to a forward reference proxy. This would of course cause
+        # problems with inter-class references, but it also means that the
+        # class itself gets treated as a forward ref instead a concrete slot,
+        # and therefore added into the pending forward refs registration. This
+        # then gets immediately fixed, except, because the registration is a
+        # set, and the iteration order of sets is non-deterministic, the
+        # exact, arbitrary order of pending ref resolution can cause a
+        # correctly-resolved forward ref for the current class being processed,
+        # to then be overwritten by a pending reference, which is then never
+        # resolved. Believe me, it's a mess.
+        # So to solve this, we need to do two things. First, add the class'
+        # __dict__ into the namespace lookups, because that solves any
+        # inter-class references. But second, we need to also add the class
+        # itself, under its __name__, because this name, though valid and
+        # accessible in the temporary class creation namespace, is nonetheless
+        # removed from the __dict__ during final class creation.
+        # But, ONE FINAL THING: chainmaps need **mutable** mappings. So we
+        # have to create a copy of the cls.__dict__ anyways.
+        resurrected_clsdef_namespace = {**cls.__dict__, cls.__name__: cls}
+
+        # Note: the whole point of this is to support forward refs, and there's
+        # a method to the madness here. We need a way of getting an actual
+        # forward ref object. Prior to 3.14 (via PEP 649), we don't have a way
+        # to specify to ``get_type_hints`` that we want to have a forward ref
+        # object, and it just raises a nameerror that we can't recover from.
+        # Our workaround is to inject an object that will lazily create proxy
+        # objects for all forward references, but we have to supply this to
+        # get_type_hints somehow, which is non-trivial:
+        # globalns needs to be strictly a dict, because it gets delegated into
+        # ``eval``, which requires one. Which means we can only use the localns
+        # to intercept missing forward references. But that, then, means that
+        # we need to recover the existing check for the actual globals, since
+        # otherwise **all** global names would be overwritten by the forward
+        # reference.
         maybe_locals = _extract_template_class_locals()
         if maybe_locals is None:
             prioritized_lookups = (
+                # See note above about this
+                resurrected_clsdef_namespace,
                 template_globals,
                 # Fun fact: these aren't included in the other globals!
                 __builtins__,
@@ -461,6 +495,8 @@ def make_template_definition[T: type](
 
         else:
             prioritized_lookups = (
+                # See note above about this
+                resurrected_clsdef_namespace,
                 maybe_locals,
                 template_globals,
                 # Fun fact: these aren't included in the other globals!
