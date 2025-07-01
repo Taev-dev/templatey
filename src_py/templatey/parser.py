@@ -8,7 +8,6 @@ import string
 from collections import defaultdict
 from collections.abc import Collection
 from collections.abc import Generator
-from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -31,7 +30,7 @@ _FUNC_MATCHER = re.compile(r'^\s*@([A-z_][A-z0-9_]*)\(([^\)]*)\)\s*$')
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ParsedTemplateResource:
     """In addition to storing the actual template parts, this stores
     information about which references the template had, for use later
@@ -56,6 +55,12 @@ class ParsedTemplateResource:
     function_calls: dict[str, tuple[InterpolatedFunctionCall]] = field(
         compare=False)
     slots: dict[str, InterpolatedSlot] = field(compare=False)
+
+    # Purely here for performance reasons
+    part_count: int = field(init=False, compare=False)
+
+    def __post_init__(self):
+        object.__setattr__(self, 'part_count', len(self.parts))
 
 
 class LiteralTemplateString(str):
@@ -311,17 +316,17 @@ class InterpolationConfig:
     prefix: str | None = None
     suffix: str | None = None
 
-    def apply_affix_iter[T](self, iterable: Iterable[T]) -> Iterator[T | str]:
-        """For the given iterable, inserts any defined prefix and/or
-        suffix before and after the passed iterable (respectively).
+    def apply_prefix_iter(self) -> Iterator[str]:
+        """If a prefix is defined, yields it. Otherwise, does nothing.
         """
-        suffix = self.suffix
         prefix = self.prefix
         if prefix is not None:
             yield prefix
 
-        yield from iterable
-
+    def apply_suffix_iter(self) -> Iterator[str]:
+        """If a suffix is defined, yields it. Otherwise, does nothing.
+        """
+        suffix = self.suffix
         if suffix is not None:
             yield suffix
 

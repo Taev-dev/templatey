@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import FrozenInstanceError
 from dataclasses import is_dataclass
 from typing import cast
 from typing import get_type_hints
+from unittest.mock import MagicMock
 
 import pytest
 
-from templatey.templates import _PENDING_FORWARD_REFS
+from templatey._forwardrefs import PENDING_FORWARD_REFS
 from templatey.templates import Content
 from templatey.templates import Slot
 from templatey.templates import TemplateIntersectable
@@ -28,7 +30,10 @@ class TestIsTemplateClass:
 
         # Quick and dirty. This will break if we add anything that isn't a
         # class var to the TemplateIntersectable class.
-        for key in get_type_hints(TemplateIntersectable):
+        for key in get_type_hints(
+            TemplateIntersectable,
+            localns=defaultdict(MagicMock)
+        ):
             setattr(FakeTemplate, key, object())
 
         assert is_template_class(FakeTemplate)
@@ -47,7 +52,10 @@ class TestIsTemplateInstance:
 
         # Quick and dirty. This will break if we add anything that isn't a
         # class var to the TemplateIntersectable class.
-        for key in get_type_hints(TemplateIntersectable):
+        for key in get_type_hints(
+            TemplateIntersectable,
+            localns=defaultdict(MagicMock)
+        ):
             setattr(FakeTemplate, key, object())
 
         instance = FakeTemplate()
@@ -151,7 +159,7 @@ class TestMakeTemplateDefinition:
             retval._templatey_signature._pending_ref_lookup))
         assert pending_ref.name == 'Foo'
 
-        forward_ref_registry = _PENDING_FORWARD_REFS.get()
+        forward_ref_registry = PENDING_FORWARD_REFS.get()
         assert len(forward_ref_registry) == 1
         assert pending_ref in forward_ref_registry
         assert forward_ref_registry[pending_ref] == {Bar}
@@ -191,7 +199,7 @@ class TestMakeTemplateDefinition:
             retval._templatey_signature._pending_ref_lookup))
         assert pending_ref.name == 'Foo'
 
-        forward_ref_registry = _PENDING_FORWARD_REFS.get()
+        forward_ref_registry = PENDING_FORWARD_REFS.get()
         assert len(forward_ref_registry) == 1
         assert pending_ref in forward_ref_registry
         assert forward_ref_registry[pending_ref] == {Bar}
@@ -259,7 +267,7 @@ class TestMakeTemplateDefinition:
             retval._templatey_signature._pending_ref_lookup))
         assert pending_ref.name == 'Foo'
 
-        forward_ref_registry = _PENDING_FORWARD_REFS.get()
+        forward_ref_registry = PENDING_FORWARD_REFS.get()
         assert len(forward_ref_registry) == 1
         assert pending_ref in forward_ref_registry
         assert forward_ref_registry[pending_ref] == {Bar, Baz}
@@ -289,7 +297,7 @@ class TestMakeTemplateDefinition:
             template_config=fake_template_config))
         assert is_template_class(retval)
         assert len(retval._templatey_signature._pending_ref_lookup) == 0
-        forward_ref_registry = _PENDING_FORWARD_REFS.get()
+        forward_ref_registry = PENDING_FORWARD_REFS.get()
         assert not forward_ref_registry
         assert Foo in retval._templatey_signature._slot_tree_lookup
 
@@ -317,7 +325,7 @@ class TestMakeTemplateDefinition:
             retval._templatey_signature._pending_ref_lookup))
         assert pending_ref.name == 'Foo'
 
-        forward_ref_registry = _PENDING_FORWARD_REFS.get()
+        forward_ref_registry = PENDING_FORWARD_REFS.get()
         assert len(forward_ref_registry) == 1
         assert pending_ref in forward_ref_registry
         assert forward_ref_registry[pending_ref] == {Bar}
@@ -401,6 +409,111 @@ class TestMakeTemplateDefinition:
 
         assert len(signature.slot_names) == 1
         assert 'foo' in signature.slot_names
+
+    def test_slot_multiples_union(self):
+        """Templates with multiple slots of the same union type must be
+        correctly defined, with both separate routes in the slot tree.
+        """
+        class FakeTemplate:
+            foo1: Slot[Foo | Bar | Baz]
+            foo2: Slot[Foo | Bar | Baz]
+
+        @template(fake_template_config, object())
+        class Foo:
+            foo: Var[str]
+
+        @template(fake_template_config, object())
+        class Bar:
+            foo: Var[str]
+
+        @template(fake_template_config, object())
+        class Baz:
+            foo: Var[str]
+
+        retval = cast(type[TemplateIntersectable], make_template_definition(
+            FakeTemplate,
+            dataclass_kwargs={},
+            template_resource_locator=object(),
+            template_config=fake_template_config))
+        signature = retval._templatey_signature
+
+        assert len(signature.slot_names) == 2
+        assert 'foo1' in signature.slot_names
+        assert 'foo2' in signature.slot_names
+        root_node = signature._slot_tree_lookup[Foo]
+        assert root_node.has_route_for('foo1', Foo)
+        assert root_node.has_route_for('foo2', Foo)
+
+    def test_slot_multiples_recursion(self):
+        """Templates with multiple slots of the same recursive type must
+        be correctly defined, with both separate routes in the slot
+        tree.
+        """
+        @template(fake_template_config, object())
+        class FakeTemplateFordref:
+            slot1: Slot[Baz | Foo | Bar]
+            slot2: Slot[Baz | Foo | Bar]
+
+        @template(fake_template_config, object())
+        class Foo:
+            bar_or_baz: Slot[Bar | Baz]
+
+        @template(fake_template_config, object())
+        class Bar:
+            foo: Slot[Foo]
+
+        @template(fake_template_config, object())
+        class Baz:
+            value: Var[str]
+
+        @template(fake_template_config, object())
+        class FakeTemplateBackref:
+            slot1: Slot[Baz | Foo | Bar]
+            slot2: Slot[Baz | Foo | Bar]
+
+        retval_backref = cast(type[TemplateIntersectable], FakeTemplateBackref)
+        retval_fordref = cast(type[TemplateIntersectable], FakeTemplateFordref)
+        signature_backref = retval_backref._templatey_signature
+        signature_fordref = retval_fordref._templatey_signature
+
+        assert signature_backref.slot_names == {'slot1', 'slot2'}
+        assert signature_fordref.slot_names == {'slot1', 'slot2'}
+        assert set(signature_backref._slot_tree_lookup) == {Foo, Bar, Baz}
+        assert set(signature_fordref._slot_tree_lookup) == {Foo, Bar, Baz}
+        assert not signature_backref._pending_ref_lookup
+        assert not signature_fordref._pending_ref_lookup
+
+        # Hard-coding the expected tree is a LOT of tedious manual work, so
+        # instead we're just going to be as pragmatic as possible and just
+        # test backref against forward-ref
+        foo_root_backref = signature_backref._slot_tree_lookup[Foo]
+        foo_root_fordref = signature_backref._slot_tree_lookup[Foo]
+        assert foo_root_backref.is_equivalent(foo_root_fordref)
+        assert {slot.slot_path for slot in foo_root_backref} == {
+            ('slot1', Foo),
+            ('slot1', Bar),
+            ('slot2', Foo),
+            ('slot2', Bar),}
+
+        bar_root_backref = signature_backref._slot_tree_lookup[Bar]
+        bar_root_fordref = signature_backref._slot_tree_lookup[Bar]
+        assert bar_root_backref.is_equivalent(bar_root_fordref)
+        assert {slot.slot_path for slot in bar_root_backref} == {
+            ('slot1', Foo),
+            ('slot1', Bar),
+            ('slot2', Foo),
+            ('slot2', Bar),}
+
+        baz_root_backref = signature_backref._slot_tree_lookup[Baz]
+        baz_root_fordref = signature_backref._slot_tree_lookup[Baz]
+        assert baz_root_backref.is_equivalent(baz_root_fordref)
+        assert {slot.slot_path for slot in baz_root_backref} == {
+            ('slot1', Foo),
+            ('slot1', Bar),
+            ('slot1', Baz),
+            ('slot2', Baz),
+            ('slot2', Foo),
+            ('slot2', Bar),}
 
     def test_var_extraction(self):
         """Fields declared with Var[...] must be correctly detected

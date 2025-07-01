@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from typing import ClassVar
 from typing import cast
 
+from templatey._types import TemplateIntersectable
 from templatey.interpolators import NamedInterpolator
+from templatey.parser import InterpolationConfig
 from templatey.parser import ParsedTemplateResource
 from templatey.templates import TemplateConfig
-from templatey.templates import TemplateIntersectable
 from templatey.templates import template
 
 
@@ -21,6 +23,7 @@ class EmptyTemplate:
     injected into a function, and therefore have no parent. It is
     special-cased within the render env.
     """
+    _TEMPLATEY_EMPTY_INSTANCE: ClassVar[bool] = True
 
 
 PARSED_EMPTY_TEMPLATE = ParsedTemplateResource(
@@ -33,3 +36,4 @@ PARSED_EMPTY_TEMPLATE = ParsedTemplateResource(
     function_calls={})
 EMPTY_TEMPLATE_XABLE = cast(type[TemplateIntersectable], EmptyTemplate)
 EMPTY_TEMPLATE_INSTANCE = EmptyTemplate()
+EMPTY_INTERPOLATION_CONFIG = InterpolationConfig()

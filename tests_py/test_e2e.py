@@ -606,9 +606,12 @@ class TestApiE2E:
     def test_forward_reference_loop(self):
         """Forward reference loops must render correctly.
         """
+        def add_class():
+            return ('mystyleclass',)
+
         # Lol where have I seen this before?
         # <div><div><div>...</div></div></div>
-        div = r'''<div>{
+        div = r'''<div class="{@add_class()}">{
             slot.div:
                 __prefix__="\n                ",
                 __suffix__='\n                '
@@ -624,7 +627,8 @@ class TestApiE2E:
                 __prefix__="\n            ",
                 __suffix__="\n            "
             }</li>'''
-        nav_link = r'<a href="{content.target}">{var.name}</a>'
+        nav_link = r'''<a href="{content.target}" class="{@add_class()}">{
+            var.name}</a>'''
 
         page = '''
             <html>
@@ -647,6 +651,9 @@ class TestApiE2E:
             </html>
             '''
 
+        # Note: keep this as a forward ref until we have more test coverage in
+        # test_templates; this balances out the multiples_recursion test we
+        # have there, which checks only the concrete case
         @template(html, 'page')
         class PageTemplate:
             name: Var[str]
@@ -673,7 +680,7 @@ class TestApiE2E:
             body: Var[str | None] = None
 
         render_env = RenderEnvironment(
-            env_functions=(),
+            env_functions=(add_class,),
             template_loader=DictTemplateLoader(
                 templates={
                     'div': div,
@@ -739,21 +746,21 @@ class TestApiE2E:
             <li>
             <ul>
             <li>
-            <a href="/">Home</a>
+            <a href="/" class="mystyleclass">Home</a>
             
-            <a href="/blog">Blog</a>
+            <a href="/blog" class="mystyleclass">Blog</a>
             </li>
             </ul>
             </li>
             </ul><ul>
             <li>
-            <a href="/docs">Docs home</a>
+            <a href="/docs" class="mystyleclass">Docs home</a>
             
             <ul>
             <li>
-            <a href="/docs/foo">Foo docs</a>
+            <a href="/docs/foo" class="mystyleclass">Foo docs</a>
             
-            <a href="/docs/bar">Bar docs</a>
+            <a href="/docs/bar" class="mystyleclass">Bar docs</a>
             </li>
             </ul>
             </li>
@@ -762,13 +769,13 @@ class TestApiE2E:
 
             <h1>Dear John Doe</h1>
             <main>
-                <div>
-                <div>
-                <div>Mainline</div>
+                <div class="mystyleclass">
+                <div class="mystyleclass">
+                <div class="mystyleclass">Mainline</div>
                 </div>
                 
-                <div>
-                <div>Sideline</div>
+                <div class="mystyleclass">
+                <div class="mystyleclass">Sideline</div>
                 </div>
                 </div>
             </main>
@@ -777,3 +784,37 @@ class TestApiE2E:
             </body>
             </html>
             '''  # noqa: W293
+
+    def test_sibling_slots(self):
+        """A template with two identical union slot types under
+        different slot names must successfully render.
+        """
+        nested = '''foo{var.value}'''
+        enclosing = '''{slot.foo1: value="1"} {slot.foo2: value="2"}'''
+
+        @template(html, 'enclosing')
+        class EnclosingTemplate:
+            foo1: Slot[NestedTemplate | OtherNestedTemplate]
+            foo2: Slot[NestedTemplate | OtherNestedTemplate]
+
+        @template(html, 'nested')
+        class NestedTemplate:
+            value: Var[str]
+
+        @template(html, 'nested')
+        class OtherNestedTemplate:
+            value: Var[str]
+
+        render_env = RenderEnvironment(
+            env_functions=(),
+            template_loader=DictTemplateLoader(
+                templates={
+                    'nested': nested,
+                    'enclosing': enclosing}))
+
+        render_result = render_env.render_sync(
+            EnclosingTemplate(
+                foo1=[NestedTemplate(value=...)],
+                foo2=[NestedTemplate(value=...)]))
+
+        assert render_result == 'foo1 foo2'

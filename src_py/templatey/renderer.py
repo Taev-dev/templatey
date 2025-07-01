@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import itertools
 import logging
-from collections import deque
 from collections.abc import Callable
 from collections.abc import Collection
 from collections.abc import Hashable
@@ -10,7 +9,9 @@ from collections.abc import Iterable
 from collections.abc import Iterator
 from collections.abc import Mapping
 from collections.abc import Sequence
+from dataclasses import KW_ONLY
 from dataclasses import dataclass
+from dataclasses import field
 from functools import partial
 from functools import singledispatch
 from typing import NamedTuple
@@ -20,6 +21,11 @@ from typing import overload
 from templatey._annotations import InterfaceAnnotationFlavor
 from templatey._bootstrapping import EMPTY_TEMPLATE_INSTANCE
 from templatey._bootstrapping import EMPTY_TEMPLATE_XABLE
+from templatey._provenance import Provenance
+from templatey._provenance import ProvenanceNode
+from templatey._signature import TemplateSignature
+from templatey._slot_tree import SlotTreeNode
+from templatey._types import TemplateClass
 from templatey.exceptions import MismatchedTemplateSignature
 from templatey.exceptions import TemplateFunctionFailure
 from templatey.parser import InterpolatedContent
@@ -31,29 +37,25 @@ from templatey.parser import NestedContentReference
 from templatey.parser import NestedVariableReference
 from templatey.parser import ParsedTemplateResource
 from templatey.templates import ComplexContent
-from templatey.templates import EnvFuncInvocation
 from templatey.templates import InjectedValue
-from templatey.templates import TemplateClass
 from templatey.templates import TemplateConfig
 from templatey.templates import TemplateIntersectable
 from templatey.templates import TemplateParamsInstance
-from templatey.templates import TemplateProvenance
-from templatey.templates import TemplateProvenanceNode
-from templatey.templates import TemplateSignature
 from templatey.templates import is_template_instance
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FuncExecutionRequest:
     name: str
     args: Iterable[object]
     kwargs: Mapping[str, object]
     result_key: _PrecallCacheKey
+    provenance: Provenance
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FuncExecutionResult:
     # Note: must match signature from TemplateFunction!
     name: str
@@ -86,6 +88,9 @@ class RenderEnvRequest:
 # Yes, this is a larger function than it should be.
 # But function calls in python are slow, and we actually kinda care about
 # performance here.
+# TODO: look into solutions that would allow for inlining functions, so you
+# could carve this up into separate functions. Can this be done without import
+# hooks?
 def render_driver(  # noqa: C901, PLR0912, PLR0915
         template_instance: TemplateParamsInstance,
         output: list[str],
@@ -100,23 +105,22 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
         function_precall={},
         error_collector=error_collector)
     yield from context.prepopulate(template_instance)
-    render_stack: list[_RenderStackNode] = []
-
     template_xable = cast(TemplateIntersectable, template_instance)
-    render_stack.append(
-        _RenderStackNode(
-            parts=iter(
-                context.template_preload[type(template_instance)].parts),
+    root_template_preload = context.template_preload[type(template_instance)]
+    render_stack: list[_RenderStackFrame] = [
+        _RenderStackFrame(
+            parts=root_template_preload.parts,
+            part_count=root_template_preload.part_count,
             config=template_xable._templatey_config,
             signature=template_xable._templatey_signature,
-            provenance=TemplateProvenance((
-                TemplateProvenanceNode(
+            provenance=Provenance((
+                ProvenanceNode(
                     encloser_slot_key='',
                     encloser_slot_index=-1,
                     instance_id=id(template_instance),
                     instance=template_instance),)),
             instance=template_instance,
-            prerenderers=template_xable._templatey_prerenderers))
+            prerenderers=template_xable._templatey_prerenderers)]
 
     while render_stack:
         # Quick note on the following code: you might think these isinstance
@@ -125,17 +129,23 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
         # with 3.13). Isinstance is actually the fastest (and clearest) way
         # to do it.
         try:
-            render_node = render_stack[-1]
-            next_part = next(render_node.parts)
+            render_frame = render_stack[-1]
+            if render_frame.exhausted:
+                render_stack.pop()
+                continue
+
+            next_part = render_frame.parts[render_frame.part_index]
 
             # Strings are hardest to deal with because they're containers, so
             # just get that out of the way first
             if isinstance(next_part, str):
+                render_frame.part_index += 1
                 output.append(next_part)
 
             elif isinstance(next_part, InterpolatedVariable):
+                render_frame.part_index += 1
                 unescaped_vars = _ParamLookup(
-                    template_provenance=render_node.provenance,
+                    provenance=render_frame.provenance,
                     template_preload=context.template_preload,
                     param_flavor=InterfaceAnnotationFlavor.VARIABLE,
                     error_collector=error_collector,
@@ -143,7 +153,7 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
 
                 raw_val = unescaped_vars[next_part.name]
                 prerenderer = getattr(
-                    render_node.prerenderers, next_part.name, None)
+                    render_frame.prerenderers, next_part.name, None)
                 if prerenderer is None:
                     prerender = raw_val
                 else:
@@ -153,14 +163,15 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                     unescaped_val = _apply_format(
                         prerender,
                         next_part.config)
-                    escaped_val = render_node.config.variable_escaper(
+                    escaped_val = render_frame.config.variable_escaper(
                         unescaped_val)
                     # Note that variable interpolations don't support affixes!
                     output.append(escaped_val)
 
             elif isinstance(next_part, InterpolatedContent):
+                render_frame.part_index += 1
                 unverified_content = _ParamLookup(
-                    template_provenance=render_node.provenance,
+                    provenance=render_frame.provenance,
                     template_preload=context.template_preload,
                     param_flavor=InterfaceAnnotationFlavor.CONTENT,
                     error_collector=error_collector,
@@ -171,19 +182,19 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                     output.extend(_render_complex_content(
                         val_from_params,
                         _ParamLookup(
-                            template_provenance=render_node.provenance,
+                            provenance=render_frame.provenance,
                             template_preload=context.template_preload,
                             param_flavor=InterfaceAnnotationFlavor.VARIABLE,
                             error_collector=error_collector,
                             placeholder_on_error=''),
-                        render_node.config,
+                        render_frame.config,
                         next_part.config,
-                        render_node.prerenderers,
+                        render_frame.prerenderers,
                         error_collector))
 
                 else:
                     prerenderer = getattr(
-                        render_node.prerenderers, next_part.name, None)
+                        render_frame.prerenderers, next_part.name, None)
                     if prerenderer is None:
                         prerender = val_from_params
                     else:
@@ -195,46 +206,131 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
                         formatted_val = _apply_format(
                             prerender,
                             next_part.config)
-                        render_node.config.content_verifier(formatted_val)
+                        render_frame.config.content_verifier(formatted_val)
                         output.extend(
                             next_part.config.apply_affix(formatted_val))
 
+            # Slots get a little bit more complicated, but the general idea is
+            # to append a stack frame for each depth level. We maintain the
+            # state of which instance we're on within the stack frame.
             elif isinstance(next_part, InterpolatedSlot):
-                provenance_counter = itertools.count()
-                render_stack.extend(reversed(tuple(
-                    _RenderStackNode(
+                slot_instance_index = render_frame.slot_instance_index
+                if slot_instance_index == 0:
+                    slot_instances = getattr(
+                        render_frame.instance, next_part.name)
+                    slot_instance_count = len(slot_instances)
+
+                    if slot_instance_count > 0:
+                        render_frame.slot_instance_count = slot_instance_count
+                        render_frame.slot_instances = slot_instances
+                    # Note that this is also important to skip prefix/suffix.
+                    else:
+                        render_frame.part_index += 1
+                        continue
+
+                else:
+                    # Note that we skip this entirely if the slot instance
+                    # count is zero, so by definition, if we hit this branch,
+                    # we need a suffix.
+                    output.extend(next_part.config.apply_suffix_iter())
+                    slot_instance_count = render_frame.slot_instance_count
+                    # We've exhausted the instances; reset the state for the
+                    # next slot.
+                    if render_frame.slot_instance_index >= slot_instance_count:
+                        render_frame.slot_instance_index = 0
+                        render_frame.slot_instance_count = 0
+                        # Note: we're deliberately skipping the slot instances,
+                        # because it'll just get overwritten the next time
+                        # around, so this is faster (though it doesn't free
+                        # memory as quickly)
+                        render_frame.part_index += 1
+                        continue
+
+                    slot_instances = render_frame.slot_instances
+
+                # Remember: we skip this entirely if the slot instance count
+                # is zero.
+                output.extend(next_part.config.apply_prefix_iter())
+                slot_instance = slot_instances[slot_instance_index]
+                # Note that this needs to support both union slot
+                # types, and (eventually) dynamic slot types, hence
+                # doing this on every iteration instead of
+                # precalculating it for the whole interpolated slot
+                slot_instance_preload = context.template_preload[
+                    type(slot_instance)]
+                slot_instance_xable = cast(
+                    TemplateIntersectable, slot_instance)
+                render_stack.append(
+                    _RenderStackFrame(
                         instance=slot_instance,
-                        parts=next_part.config.apply_affix_iter(
-                            context.template_preload[
-                                type(slot_instance)].parts),
-                        config=slot_instance._templatey_config,
-                        signature=slot_instance._templatey_signature,
-                        provenance=TemplateProvenance(
-                            (*render_node.provenance, TemplateProvenanceNode(
+                        parts=slot_instance_preload.parts,
+                        part_count=slot_instance_preload.part_count,
+                        config=slot_instance_xable._templatey_config,
+                        signature=slot_instance_xable._templatey_signature,
+                        provenance=render_frame.provenance.with_appended(
+                            ProvenanceNode(
                                 encloser_slot_key=next_part.name,
-                                encloser_slot_index=next(provenance_counter),
+                                encloser_slot_index=slot_instance_index,
                                 instance_id=id(slot_instance),
-                                instance=slot_instance))),
-                        prerenderers=slot_instance._templatey_prerenderers)
-                    for slot_instance
-                    in getattr(render_node.instance, next_part.name))))
+                                instance=slot_instance)),
+                        prerenderers=
+                            slot_instance_xable._templatey_prerenderers))
+
+                render_frame.slot_instance_index += 1
 
             elif isinstance(next_part, InterpolatedFunctionCall):
+                render_frame.part_index += 1
                 execution_result = context.function_precall[
-                    _get_precall_cache_key(render_node.provenance, next_part)]
-                nested_render_nodes = _build_render_node_for_func_result(
+                    _get_precall_cache_key(render_frame.provenance, next_part)]
+                nested_render_node = _build_render_frame_for_func_result(
+                    render_frame.instance,
+                    render_frame.provenance,
+                    next_part,
                     execution_result,
-                    render_node.config,
-                    error_collector,
-                    context.template_preload)
-                render_stack.extend(nested_render_nodes)
+                    render_frame.config,
+                    error_collector)
+                if nested_render_node is not None:
+                    render_stack.append(nested_render_node)
+
+            # Similar to slots, but different enough that it warrants a
+            # separate approach. Trust me, I tried to unify them, and 1. I
+            # never got it fully working, 2. it was a pretty big hack (a
+            # virtual slot mechanism with some __getattr__ shenanigans), and
+            # 3. it created way more problems than it was worth.
+            # More info in the docstring for _InjectedInstanceContainer.
+            elif isinstance(next_part, _InjectedInstanceContainer):
+                render_frame.part_index += 1
+                injected_instance = next_part.instance
+                # Note that this needs to support both union slot
+                # types, and (eventually) dynamic slot types, hence
+                # doing this on every iteration instead of
+                # precalculating it for the whole interpolated slot
+                injected_instance_preload = context.template_preload[
+                    type(injected_instance)]
+                injected_instance_xable = cast(
+                    TemplateIntersectable, injected_instance)
+                render_stack.append(
+                    _RenderStackFrame(
+                        instance=injected_instance,
+                        parts=injected_instance_preload.parts,
+                        part_count=injected_instance_preload.part_count,
+                        config=injected_instance_xable._templatey_config,
+                        signature=injected_instance_xable._templatey_signature,
+                        # Note that the correct ``from_injection`` value is
+                        # added when creating the current stack frame.
+                        provenance=render_frame.provenance.with_appended(
+                            ProvenanceNode(
+                                encloser_slot_key='',
+                                encloser_slot_index=-1,
+                                instance_id=id(injected_instance),
+                                instance=injected_instance),),
+                        prerenderers=
+                            injected_instance_xable._templatey_prerenderers))
 
             else:
                 raise TypeError(
-                    'impossible branch: invalid template part type!')
-
-        except StopIteration:
-            render_stack.pop()
+                    'Templatey internal error: unknown template part!',
+                    next_part)
 
         # Note: this could be eg a lookup error because of a missing variable.
         # This isn't redundant with the error collection within prepopulation.
@@ -243,18 +339,183 @@ def render_driver(  # noqa: C901, PLR0912, PLR0915
 
 
 @dataclass(slots=True)
-class _RenderStackNode:
+class _InjectedInstanceContainer:
+    """When env functions inject instances of templates, the render
+    stack gets into a bit of a weird state. We want to avoid needing to
+    extend the stack by one for each and every injected template and/or
+    stringified value that the function returned. But we can't modify
+    the existing parts of a frame; first, it's a sometimes (always?) a
+    tuple, but more importantly, it would screw up our entire indexing
+    mechanism.
+
+    In theory we could add a "pending injections" sub-stack or something
+    to the _RenderStackFrame, but then we'd be stuck checking for that
+    during every single iteration of the render driver loop.
+
+    So instead, we do this: wrap the instance into a container, and
+    then (as the LAST, and therefore SLOWEST, check in the render driver
+    loop) we can check for the container, and have special logic for
+    handling them there.
+    """
     instance: TemplateParamsInstance
-    parts: Iterator[
+
+
+@dataclass(slots=True)
+class _RenderStackFrame:
+    instance: TemplateParamsInstance
+    config: TemplateConfig
+    signature: TemplateSignature
+    provenance: Provenance
+    prerenderers: NamedTuple
+    parts: Sequence[
         str
         | InterpolatedSlot
         | InterpolatedContent
         | InterpolatedVariable
-        | InterpolatedFunctionCall]
-    config: TemplateConfig
-    signature: TemplateSignature
-    provenance: TemplateProvenance
-    prerenderers: NamedTuple
+        | InterpolatedFunctionCall
+        | _InjectedInstanceContainer]
+
+    _: KW_ONLY
+    part_count: int
+    part_index: int = field(default=0, init=False)
+    slot_instance_count: int = field(default=0, init=False)
+    slot_instance_index: int = field(default=0, init=False)
+    slot_instances: Sequence[TemplateParamsInstance] = field(init=False)
+
+    @property
+    def exhausted(self) -> bool:
+        # Note that the slot index exhaustion is handled separately, by
+        # controlling exactly when the part index is incremented
+        return self.part_index >= self.part_count
+
+
+@dataclass(slots=True)
+class _PrepopulationBatch:
+    injection_provenance: Provenance | None
+    # Note that this might be an injected template!
+    local_root_instance: TemplateParamsInstance
+    function_backlog: list[FuncExecutionRequest]
+    template_backlog: set[TemplateClass]
+
+    def extract_injections(
+            self,
+            function_precall:
+                dict[_PrecallCacheKey, FuncExecutionResult]
+            ) -> list[_PrepopulationBatch]:
+        result = []
+        for exe_req in self.function_backlog:
+            result_cache_key = exe_req.result_key
+            function_result = function_precall[result_cache_key]
+
+            for injected_template in function_result.filter_injectables():
+                injected_xable = cast(
+                    TemplateIntersectable, injected_template)
+
+                result.append(_PrepopulationBatch(
+                    injection_provenance=exe_req.provenance,
+                    local_root_instance=injected_template,
+                    function_backlog=[],
+                    template_backlog=set(
+                        injected_xable._templatey_signature
+                        .included_template_classes)))
+
+        return result
+
+    def extract_invocations(
+            self,
+            template_preload:
+                dict[TemplateClass, ParsedTemplateResource],
+            error_collector: list[Exception],
+            ) -> _PrepopulationBatch | None:
+        function_backlog = []
+        injection_provenance = self.injection_provenance
+        root_instance = self.local_root_instance
+        root_xable = cast(TemplateIntersectable, root_instance)
+        slot_tree_lookup = root_xable._templatey_signature._slot_tree_lookup
+
+        for template_cls in self.template_backlog:
+            abstract_calls = (
+                template_preload[template_cls].function_calls)
+
+            if abstract_calls:
+                # Remember: for the root template, it might or might not
+                # exist in the slot tree, depending on whether or not it has
+                # recursion loops. That being said, we want to be
+                # defensive, and not assume that BECAUSE it's missing, it's
+                # automatically the root instance.
+                if template_cls is type(root_instance):
+                    slot_tree_root = slot_tree_lookup.get(
+                        template_cls,
+                        SlotTreeNode(is_terminus=True))
+                else:
+                    slot_tree_root = slot_tree_lookup[template_cls]
+
+                # Oof. The combinatorics here are brutal.
+                for provenance, abstract_call in itertools.product(
+                    Provenance.from_slot_tree(
+                        root_instance,
+                        slot_tree_root,
+                        from_injection=injection_provenance),
+                    itertools.chain.from_iterable(abstract_calls.values())
+                ):
+                    unescaped_vars = _ParamLookup(
+                        provenance=provenance,
+                        template_preload=template_preload,
+                        param_flavor=InterfaceAnnotationFlavor.VARIABLE,
+                        error_collector=error_collector,
+                        placeholder_on_error='')
+                    unverified_content = _ParamLookup(
+                        provenance=provenance,
+                        template_preload=template_preload,
+                        param_flavor=InterfaceAnnotationFlavor.CONTENT,
+                        error_collector=error_collector,
+                        placeholder_on_error='')
+
+                    # Note that the full call signature is **defined**
+                    # within the parsed template body, but it may
+                    # **reference** vars and/or content within the template
+                    # instance.
+                    args = _recursively_coerce_func_execution_params(
+                        abstract_call.call_args,
+                        unescaped_vars=unescaped_vars,
+                        unverified_content=unverified_content)
+                    kwargs = _recursively_coerce_func_execution_params(
+                        abstract_call.call_kwargs,
+                        unescaped_vars=unescaped_vars,
+                        unverified_content=unverified_content)
+
+                    if abstract_call.call_args_exp is not None:
+                        args = (*args, *cast(
+                            Iterable,
+                            _recursively_coerce_func_execution_params(
+                                abstract_call.call_args_exp,
+                                unescaped_vars=unescaped_vars,
+                                unverified_content=unverified_content)))
+
+                    if abstract_call.call_kwargs_exp is not None:
+                        kwargs.update(cast(
+                            Mapping,
+                            _recursively_coerce_func_execution_params(
+                                abstract_call.call_kwargs_exp,
+                                unescaped_vars=unescaped_vars,
+                                unverified_content=unverified_content)))
+
+                    result_cache_key = _get_precall_cache_key(
+                        provenance, abstract_call)
+                    function_backlog.append(
+                        FuncExecutionRequest(
+                            abstract_call.name,
+                            args=args,
+                            kwargs=kwargs,
+                            result_key=result_cache_key,
+                            provenance=provenance))
+
+        if function_backlog:
+            return _PrepopulationBatch(
+                injection_provenance=injection_provenance,
+                local_root_instance=self.local_root_instance,
+                function_backlog=function_backlog,
+                template_backlog=set())
 
 
 @dataclass(slots=True)
@@ -265,142 +526,73 @@ class _RenderContext:
 
     def prepopulate(
             self,
-            root_template: TemplateParamsInstance
+            root_template_instance: TemplateParamsInstance
             ) -> Iterable[RenderEnvRequest]:
         """For the passed root template, populates the template_preload
         and function_precall until either all resources have been
         prepared, or it needs help from the render environment.
         """
-        # Note that there will only be multiple local roots on any given
-        # loop iteration if a function returns multiple template instances
-        # as a result.
-        template_backlog_local_roots: list[TemplateParamsInstance]
-        template_backlog_included_classes: set[TemplateClass]
+        root_template_xable = cast(
+            TemplateIntersectable, root_template_instance)
+        template_preload: \
+            dict[TemplateClass, ParsedTemplateResource] = self.template_preload
+        function_precall: \
+            dict[_PrecallCacheKey, FuncExecutionResult] = self.function_precall
 
-        function_backlog: list[EnvFuncInvocation]
-        template_preload: dict[TemplateClass, ParsedTemplateResource]
-        function_precall: dict[_PrecallCacheKey, FuncExecutionResult]
+        batches: list[_PrepopulationBatch] = [_PrepopulationBatch(
+            injection_provenance=None,
+            local_root_instance=root_template_instance,
+            function_backlog=[],
+            # Note that this always includes the root template class
+            template_backlog=set(
+                root_template_xable
+                ._templatey_signature.included_template_classes))]
 
-        root_template_class = type(root_template)
-        root_template_xable = cast(TemplateIntersectable, root_template_class)
-        # Need to make a copy since we'll be mutating, but we don't need to
-        # check for membership, so we might as well keep it a list
-        template_backlog_local_roots = [root_template]
-        template_backlog_included_classes = set(
-            root_template_xable
-            ._templatey_signature.included_template_classes)
-        function_backlog = []
-        template_preload = self.template_preload
-        function_precall = self.function_precall
-
-        # Note: it might seem a little redundant that we're looping over this
-        # and then iterating across all of the template instances; however,
-        # this allows us to batch together all of the help requests, which is
-        # a huge reduction in runtime overhead
-        while bool(template_backlog_local_roots) or bool(function_backlog):
-            to_execute: list[FuncExecutionRequest] = []
-
-            # Note that this will never run on the first iteration of the outer
-            # loop, because we won't have a function backlog until after the
-            # templates have been loaded.
-            while function_backlog:
-                template_provenance, function_call = function_backlog.pop()
-                unescaped_vars = _ParamLookup(
-                    template_provenance=template_provenance,
-                    template_preload=template_preload,
-                    param_flavor=InterfaceAnnotationFlavor.VARIABLE,
-                    error_collector=self.error_collector,
-                    placeholder_on_error='')
-                unverified_content = _ParamLookup(
-                    template_provenance=template_provenance,
-                    template_preload=template_preload,
-                    param_flavor=InterfaceAnnotationFlavor.CONTENT,
-                    error_collector=self.error_collector,
-                    placeholder_on_error='')
-
-                # Note that the full call signature is **defined** within
-                # the parsed template body, but it may **reference** vars
-                # and/or content within the template instance.
-                args = _recursively_coerce_func_execution_params(
-                    function_call.call_args,
-                    unescaped_vars=unescaped_vars,
-                    unverified_content=unverified_content)
-                kwargs = _recursively_coerce_func_execution_params(
-                    function_call.call_kwargs,
-                    unescaped_vars=unescaped_vars,
-                    unverified_content=unverified_content)
-
-                if function_call.call_args_exp is not None:
-                    args = (*args, *cast(
-                        Iterable,
-                        _recursively_coerce_func_execution_params(
-                            function_call.call_args_exp,
-                            unescaped_vars=unescaped_vars,
-                            unverified_content=unverified_content)))
-
-                if function_call.call_kwargs_exp is not None:
-                    kwargs.update(cast(
-                        Mapping, _recursively_coerce_func_execution_params(
-                            function_call.call_kwargs_exp,
-                            unescaped_vars=unescaped_vars,
-                            unverified_content=unverified_content)))
-
-                result_cache_key = _get_precall_cache_key(
-                    template_provenance, function_call)
-                to_execute.append(
-                    FuncExecutionRequest(
-                        function_call.name,
-                        args=args,
-                        kwargs=kwargs,
-                        result_key=result_cache_key))
+        while batches:
+            to_load = set()
+            to_execute = []
+            # Note that it's important that we're modifying the params for
+            # the RenderEnvRequest and not the batches, because the batches
+            # will determine where we look for additional injections and/or
+            # invocations, regardless of whether or not an execution or load
+            # was actually required.
+            for batch in batches:
+                to_load.update(batch.template_backlog)
+                to_execute.extend(batch.function_backlog)
+            to_load.difference_update(template_preload)
 
             yield RenderEnvRequest(
-                to_load=template_backlog_included_classes,
+                to_load=to_load,
                 to_execute=to_execute,
                 error_collector=self.error_collector,
                 results_loaded=template_preload,
                 results_executed=function_precall)
 
-            # Always do this AFTER the env request has been sent; otherwise,
-            # we can't possibly add any more functions to the backlog, because
-            # we won't know anything more about the templates!
-            while template_backlog_local_roots:
-                local_root_template = template_backlog_local_roots.pop()
-                local_root_template_signature = cast(
-                    TemplateIntersectable,
-                    local_root_template)._templatey_signature
-
-                function_backlog.extend(
-                    local_root_template_signature.extract_function_invocations(
-                        local_root_template, template_preload))
-            template_backlog_included_classes.clear()
-
-            # Now that we've cleared any existing templates from the backlog,
-            # we need to add in any that were created by the functions.
-            # Note that it's possible that the function backlog could return
-            # a new template instance of an already loaded template class. In
-            # that case, we still need to execute the functions there, so the
-            # easiest thing is just to ask for a reload of the template.
-            while to_execute:
-                result_cache_key = to_execute.pop().result_key
-                function_result = function_precall[result_cache_key]
-
-                for injected_template in function_result.filter_injectables():
-                    injected_xable = cast(
-                        TemplateIntersectable, injected_template)
-                    template_backlog_local_roots.append(injected_template)
-                    template_backlog_included_classes.update(
-                        injected_xable._templatey_signature
-                        .included_template_classes)
+            completed_batches = batches
+            batches = []
+            # Yes, it's a little awkward to re-iterate over this, but we need
+            # to keep track of the injection provenance, and this is the most
+            # convenient way to do it.
+            # Also note: it's crticial that we're still looking at batches
+            # and not to_load/to_execute, since those will skip already-loaded
+            # templates, which would result in us skipping needed invocations.
+            for completed_batch in completed_batches:
+                batches.extend(completed_batch.extract_injections(
+                    function_precall))
+                next_batch = completed_batch.extract_invocations(
+                    template_preload,
+                    self.error_collector)
+                if next_batch is not None:
+                    batches.append(next_batch)
 
 
 type _PrecallExecutionRequest = tuple[
-    TemplateProvenance, InterpolatedFunctionCall]
+    Provenance, InterpolatedFunctionCall]
 type _PrecallCacheKey = Hashable
 
 
 def _get_precall_cache_key(
-        template_provenance: TemplateProvenance,
+        provenance: Provenance,
         interpolated_call: InterpolatedFunctionCall
         ) -> _PrecallCacheKey:
     """For a particular template instance and interpolated function
@@ -410,7 +602,7 @@ def _get_precall_cache_key(
     # Note that template provenance includes the actual current template
     # instance, so by definition, this encodes exactly which function call
     # is being referenced
-    return (template_provenance, interpolated_call)
+    return (provenance, interpolated_call)
 
 
 def _render_complex_content(
@@ -461,24 +653,26 @@ def _render_complex_content(
         error_collector.append(exc)
 
 
-def _build_render_node_for_func_result(
+def _build_render_frame_for_func_result(  # noqa: C901
+        enclosing_instance: TemplateParamsInstance,
+        enclosing_provenance: Provenance,
+        abstract_call: InterpolatedFunctionCall,
         execution_result: FuncExecutionResult,
         template_config: TemplateConfig,
-        error_collector: list[Exception],
-        template_preload: dict[TemplateClass, ParsedTemplateResource]
-        ) -> Iterable[_RenderStackNode]:
+        error_collector: list[Exception]
+        ) -> _RenderStackFrame | None:
     """This constructs a _RenderNode for the given execution result and
     returns it (or None, if there was an error).
     """
-    has_nested_templates = False
-    resulting_parts: list[str | TemplateParamsInstance] = []
+    injected_templates: list[tuple[int, TemplateParamsInstance]] = []
+    resulting_parts: list[str | _InjectedInstanceContainer] = []
     if execution_result.exc is None:
         if execution_result.retval is None:
             raise TypeError(
                 'Impossible branch! Malformed func exe result',
                 execution_result)
 
-        for result_part in execution_result.retval:
+        for index, result_part in enumerate(execution_result.retval):
             if isinstance(result_part, str):
                 resulting_parts.append(
                     template_config.variable_escaper(result_part))
@@ -486,8 +680,10 @@ def _build_render_node_for_func_result(
                 resulting_parts.append(
                     _coerce_injected_value(result_part, template_config))
             elif is_template_instance(result_part):
-                has_nested_templates = True
-                resulting_parts.append(result_part)
+                injected_templates.append((index, result_part))
+                # This is just a placeholder; it gets overwritten in
+                # _build_render_stack_extension
+                resulting_parts.append('')
             else:
                 error_collector.append(_capture_traceback(
                     TypeError(
@@ -504,89 +700,34 @@ def _build_render_node_for_func_result(
             TemplateFunctionFailure('Env function raised!'),
             from_exc=execution_result.exc))
 
-    if resulting_parts:
-        if has_nested_templates:
-            return _build_render_stack_extension(
-                resulting_parts,
-                template_config,
-                template_preload)
+    if injected_templates:
+        for index, template_instance in injected_templates:
+            resulting_parts[index] = _InjectedInstanceContainer(
+                template_instance)
 
-        # This is an optimization that skips a bunch of copies and stack
-        # reordering if the function didn't have any nested templates
-        else:
-            return [_RenderStackNode(
-                parts=iter(cast(list[str], resulting_parts)),
-                config=EMPTY_TEMPLATE_XABLE._templatey_config,
-                signature=EMPTY_TEMPLATE_XABLE._templatey_signature,
-                provenance=TemplateProvenance(),
-                instance=EMPTY_TEMPLATE_INSTANCE,
-                prerenderers=EMPTY_TEMPLATE_XABLE._templatey_prerenderers)]
-
-    return ()
-
-
-def _build_render_stack_extension(
-        func_result_parts: list[str | TemplateParamsInstance],
-        parent_template_config: TemplateConfig,
-        template_preload: dict[TemplateClass, ParsedTemplateResource]
-        ) -> deque[_RenderStackNode]:
-    """Our render stack needs to be structured in a particular way, but
-    the results from a function execution may interleave plain strings
-    with nested templates. This handles converting the parts into a
-    flattened list of stack nodes that preserves part order while still
-    maintaining provenance etc.
-    """
-    nodes: deque[_RenderStackNode] = deque()
-    current_node_parts: list[str] = []
-
-    for func_result_part in func_result_parts:
-        if isinstance(func_result_part, str):
-            current_node_parts.append(func_result_part)
-
-        else:
-            if current_node_parts:
-                nodes.append(_RenderStackNode(
-                    parts=iter(current_node_parts),
-                    config=EMPTY_TEMPLATE_XABLE._templatey_config,
-                    signature=EMPTY_TEMPLATE_XABLE._templatey_signature,
-                    provenance=TemplateProvenance(),
-                    instance=EMPTY_TEMPLATE_INSTANCE,
-                    prerenderers=EMPTY_TEMPLATE_XABLE._templatey_prerenderers))
-                # Make sure to create a new one so we don't screw up our iter()
-                current_node_parts = []
-
-            template_xable = cast(TemplateIntersectable, func_result_part)
-            nodes.append(
-                _RenderStackNode(
-                    parts=iter(
-                        template_preload[type(func_result_part)].parts),
-                    config=template_xable._templatey_config,
-                    signature=template_xable._templatey_signature,
-                    provenance=TemplateProvenance((
-                        TemplateProvenanceNode(
-                            encloser_slot_key='',
-                            encloser_slot_index=-1,
-                            instance_id=id(func_result_part),
-                            instance=func_result_part),)),
-                    instance=func_result_part,
-                    prerenderers=template_xable._templatey_prerenderers))
-
-    # We have to do this one last time in case there were any trailing strings
-    # after the last nested template instance
-    if current_node_parts:
-        nodes.append(_RenderStackNode(
-            parts=iter(current_node_parts),
+        return _RenderStackFrame(
+            parts=resulting_parts,
+            part_count=len(resulting_parts),
             config=EMPTY_TEMPLATE_XABLE._templatey_config,
             signature=EMPTY_TEMPLATE_XABLE._templatey_signature,
-            provenance=TemplateProvenance(),
+            # Note: keep this empty here, because we need the instance info
+            # to match the injected template, and the whole idea here is to
+            # avoid a bunch of extraneous stack frames. We'll add in the
+            # correct initial node in the render driver code, where we deal
+            # with _InjectedInstanceContainers
+            provenance=Provenance(from_injection=enclosing_provenance),
             instance=EMPTY_TEMPLATE_INSTANCE,
-            prerenderers=EMPTY_TEMPLATE_XABLE._templatey_prerenderers))
-    # Rationale: the nodes are currently in order of first encountered to
-    # last encountered, which is the opposite of a stack. By simply reversing
-    # them, we can then just extend them onto the existing render stack, easy
-    # peasy.
-    nodes.reverse()
-    return nodes
+            prerenderers=EMPTY_TEMPLATE_XABLE._templatey_prerenderers)
+
+    elif resulting_parts:
+        return _RenderStackFrame(
+            parts=resulting_parts,
+            part_count=len(resulting_parts),
+            config=EMPTY_TEMPLATE_XABLE._templatey_config,
+            signature=EMPTY_TEMPLATE_XABLE._templatey_signature,
+            provenance=Provenance(),
+            instance=EMPTY_TEMPLATE_INSTANCE,
+            prerenderers=EMPTY_TEMPLATE_XABLE._templatey_prerenderers)
 
 
 # Note: it would be nice if we could get a little more clever with the types
@@ -600,7 +741,7 @@ class _ParamLookup(Mapping[str, object]):
     ExceptionGroup (without short-circuiting on the first error) while
     rendering.
     """
-    template_provenance: TemplateProvenance
+    provenance: Provenance
     error_collector: list[Exception]
     placeholder_on_error: object
     lookup: Callable[[str], object]
@@ -608,23 +749,23 @@ class _ParamLookup(Mapping[str, object]):
 
     def __init__(
             self,
-            template_provenance: TemplateProvenance,
+            provenance: Provenance,
             template_preload: dict[TemplateClass, ParsedTemplateResource],
             param_flavor: InterfaceAnnotationFlavor,
             error_collector: list[Exception],
             placeholder_on_error: object):
         self.error_collector = error_collector
         self.placeholder_on_error = placeholder_on_error
-        self.template_provenance = template_provenance
+        self.provenance = provenance
         self.param_flavor = param_flavor
 
         if param_flavor is InterfaceAnnotationFlavor.CONTENT:
             self.lookup = partial(
-                template_provenance.bind_content,
+                provenance.bind_content,
                 template_preload=template_preload)
         elif param_flavor is InterfaceAnnotationFlavor.VARIABLE:
             self.lookup = partial(
-                template_provenance.bind_variable,
+                provenance.bind_variable,
                 template_preload=template_preload)
         else:
             raise TypeError(
@@ -644,7 +785,7 @@ class _ParamLookup(Mapping[str, object]):
                     + 'Or it could indicate an ellipsis being passed in as '
                     + 'the value for a template parameter. Or it could be a '
                     + 'bug in templatey.',
-                    self.template_provenance[-1].instance,
+                    self.provenance.slotpath[-1].instance,
                     name),
                 from_exc=exc))
             return self.placeholder_on_error
@@ -653,7 +794,7 @@ class _ParamLookup(Mapping[str, object]):
         # Note: this is going to be less commonly used (presumably) than just
         # getitem (the only external access to this is through complex content
         # flattening), so don't precalculate this during __init__
-        template_instance = self.template_provenance[-1].instance
+        template_instance = self.provenance.slotpath[-1].instance
         template_xable = cast(TemplateIntersectable, template_instance)
         if self.param_flavor is InterfaceAnnotationFlavor.CONTENT:
             return len(template_xable._templatey_signature.content_names)
@@ -668,7 +809,7 @@ class _ParamLookup(Mapping[str, object]):
         # Note: this is going to be less commonly used (presumably) than just
         # getitem (the only external access to this is through complex content
         # flattening), so don't precalculate this during __init__
-        template_instance = self.template_provenance[-1].instance
+        template_instance = self.provenance.slotpath[-1].instance
         template_xable = cast(TemplateIntersectable, template_instance)
         if self.param_flavor is InterfaceAnnotationFlavor.CONTENT:
             return (
