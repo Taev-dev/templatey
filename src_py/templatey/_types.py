@@ -10,6 +10,7 @@ from typing import ClassVar
 from typing import NamedTuple
 from typing import Protocol
 
+from docnote import ClcNote
 from typing_extensions import TypeIs
 
 from templatey._annotations import InterfaceAnnotation
@@ -33,21 +34,112 @@ type TemplateClass = type[TemplateParamsInstance]
 type TemplateInstanceID = int
 
 
-# Technically, these should use the TemplateIntersectable from templates.py,
-# but since we can't define type intersections yet...
+# Technically, these should use the TemplateIntersectable from templates.py
+# instead of ``TemplateParamsInstance``, python doesn't support type
+# intersections yet, so we settle for this.
 type Slot[T: TemplateParamsInstance] = Annotated[
     Sequence[T],
-    InterfaceAnnotation(InterfaceAnnotationFlavor.SLOT)]
+    InterfaceAnnotation(InterfaceAnnotationFlavor.SLOT),
+    ClcNote(
+        '''A ``Slot`` is a generic container used to define nested
+        templates. They must be passed a concrete template class as a
+        parameter, for example:
+
+        > A simple template with a single slot
+        __embed__: 'code/python'
+            @template(my_template_config, my_template_locator)
+            class EnclosingTemplate:
+                my_slot: Slot[MyNestedTemplate]
+
+        If you're looking for a way to define slots using a dynamic
+        template class, you should either use ``DynamicSlot``
+        (preferred) or look at the prebaked template injection function.
+        ''')]
 type Var[T] = Annotated[
     T | EllipsisType,
-    InterfaceAnnotation(InterfaceAnnotationFlavor.VARIABLE)]
+    InterfaceAnnotation(InterfaceAnnotationFlavor.VARIABLE),
+    ClcNote(
+        '''A ``Var`` is a generic container used to define some
+        interpolatable variable within a template. They should be passed
+        a concrete type as a parameter, though this value is not used
+        by templatey. For example:
+
+        > A simple template with a single ``Var``
+        __embed__: 'code/python'
+            @template(my_template_config, my_template_locator)
+            class EnclosingTemplate:
+                my_var: Var[str]
+
+        The distinction between ``Content`` and ``Var`` is in how their
+        values are handled. ``Content`` is intended only for **trusted**
+        content; post-interpolation values are verified, but not
+        escaped. Meanwhile, ``Var`` ^^can^^ be used with untrusted
+        content, and its values will be escaped, but not verified.
+
+        Both ``Var`` escaping and ``Content`` verification are
+        controlled by the ``TemplateConfig``.
+
+        Note that ``Var`` values within templates may be provided by
+        an enclosing template, as a parameter on their slots. For more
+        information, <create a github issue if you read this please,
+        because we haven't made a guide for this yet>
+        ''')]
 type Content[T] = Annotated[
     T,
-    InterfaceAnnotation(InterfaceAnnotationFlavor.CONTENT)]
-type DynamicSlot = Annotated[
-    Sequence[TemplateParamsInstance],
+    InterfaceAnnotation(InterfaceAnnotationFlavor.CONTENT),
+    ClcNote(
+        '''A ``Content`` parameter is a generic container used to define some
+        interpolatable variable within a template. They should be passed
+        a concrete type as a parameter, though this value is not used
+        by templatey. For example:
+
+        > A simple template with a single ``Content`` param
+        __embed__: 'code/python'
+            @template(my_template_config, my_template_locator)
+            class EnclosingTemplate:
+                my_var: Content[str]
+
+        The distinction between ``Content`` and ``Var`` is in how their
+        values are handled. ``Content`` is intended only for **trusted**
+        content; post-interpolation values are verified, but not
+        escaped. Meanwhile, ``Var`` ^^can^^ be used with untrusted
+        content, and its values will be escaped, but not verified.
+
+        Both ``Var`` escaping and ``Content`` verification are
+        controlled by the ``TemplateConfig``.
+        ''')]
+type DynamicClassSlot[T: TemplateParamsInstance] = Annotated[
+    Sequence[T],
     InterfaceAnnotation(InterfaceAnnotationFlavor.SLOT),
-    InterfaceAnnotation(InterfaceAnnotationFlavor.DYNAMIC)]
+    InterfaceAnnotation(InterfaceAnnotationFlavor.DYNAMIC),
+    ClcNote(
+        '''Like a ``Slot``, a ``DynamicClassSlot`` is a generic container
+        used to define nested templates. Although templates in
+        templatey cannot be subclassed, they may use mixins as
+        superclasses; in that case, it may be useful to supply a type
+        argument to the dynamic slot to narrow its type during type
+        checking.
+
+        > A simple template with two dynamic slots
+        __embed__: 'code/python'
+            @template(my_template_config, my_template_locator)
+            class EnclosingTemplate:
+                # Note that this can be literally any template instance
+                my_slot_1: DynamicClassSlot
+                # This is constrained to a subclass
+                my_slot_2: DynamicClassSlot[SomeMixin]
+
+        Note that the type arg to ``DynamicClassSlot`` is neither required,
+        nor used by templatey. It's provided strictly to support
+        applications where you want more restrictive type annotations
+        than "literally any template class whatsoever".
+
+        Note also that ``DynamicClassSlot``s come at a slight performance
+        penalty compared to normal ``Slot``s. If possible, prefer a
+        plain ``Slot``, perhaps with a type union as a parameter.
+        That being said, ``DynamicClassSlot``s are still more performant than
+        injecting templates via environment functions.
+        ''')]
 
 
 def is_template_class(cls: type) -> TypeIs[type[TemplateIntersectable]]:

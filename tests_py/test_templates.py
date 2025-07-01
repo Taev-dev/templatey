@@ -11,6 +11,7 @@ import pytest
 
 from templatey._forwardrefs import PENDING_FORWARD_REFS
 from templatey._types import Content
+from templatey._types import DynamicClassSlot
 from templatey._types import Slot
 from templatey._types import TemplateIntersectable
 from templatey._types import Var
@@ -487,7 +488,7 @@ class TestMakeTemplateDefinition:
         # instead we're just going to be as pragmatic as possible and just
         # test backref against forward-ref
         foo_root_backref = signature_backref._slot_tree_lookup[Foo]
-        foo_root_fordref = signature_backref._slot_tree_lookup[Foo]
+        foo_root_fordref = signature_fordref._slot_tree_lookup[Foo]
         assert foo_root_backref.is_equivalent(foo_root_fordref)
         assert {slot.slot_path for slot in foo_root_backref} == {
             ('slot1', Foo),
@@ -496,7 +497,7 @@ class TestMakeTemplateDefinition:
             ('slot2', Bar),}
 
         bar_root_backref = signature_backref._slot_tree_lookup[Bar]
-        bar_root_fordref = signature_backref._slot_tree_lookup[Bar]
+        bar_root_fordref = signature_fordref._slot_tree_lookup[Bar]
         assert bar_root_backref.is_equivalent(bar_root_fordref)
         assert {slot.slot_path for slot in bar_root_backref} == {
             ('slot1', Foo),
@@ -505,7 +506,7 @@ class TestMakeTemplateDefinition:
             ('slot2', Bar),}
 
         baz_root_backref = signature_backref._slot_tree_lookup[Baz]
-        baz_root_fordref = signature_backref._slot_tree_lookup[Baz]
+        baz_root_fordref = signature_fordref._slot_tree_lookup[Baz]
         assert baz_root_backref.is_equivalent(baz_root_fordref)
         assert {slot.slot_path for slot in baz_root_backref} == {
             ('slot1', Foo),
@@ -597,3 +598,98 @@ class TestMakeTemplateDefinition:
             instance.foo = 'bar'  # type: ignore
 
         assert hasattr(instance, '__slots__')
+
+    def test_dynamic_class_slot_extraction(self):
+        """Fields declared with DynamicClassSlot[...] must be correctly
+        detected and stored on the class.
+
+        This checks the simplest case, with no forward references nor
+        nesting slots.
+        """
+        @template(fake_template_config, object())
+        class Foo:
+            foo: Var[str]
+
+        class FakeTemplate:
+            foo: Slot[Foo]
+            bar: DynamicClassSlot
+
+        retval = cast(type[TemplateIntersectable], make_template_definition(
+            FakeTemplate,
+            dataclass_kwargs={},
+            template_resource_locator=object(),
+            template_config=fake_template_config))
+        signature = retval._templatey_signature
+
+        assert len(signature.slot_names) == 1
+        assert 'foo' in signature.slot_names
+        assert len(signature.dynamic_class_slot_names) == 1
+        assert 'bar' in signature.dynamic_class_slot_names
+
+        assert len(signature._dynamic_class_slot_tree) == 0
+        assert signature._dynamic_class_slot_tree.dynamic_class_slot_names == {
+            'bar'}
+
+    def test_dynamic_class_slot_extraction_recursion_loop(self):
+        """Fields declared with DynamicClassSlot[...] must be correctly
+        detected and stored on the class.
+
+        This checks the simplest case, with no forward references nor
+        nesting slots.
+        """
+        @template(fake_template_config, object())
+        class FakeTemplateFordref:
+            slot1: Slot[Baz | Foo | Bar]
+            slot2: Slot[Baz | Foo | Bar]
+
+        @template(fake_template_config, object())
+        class Foo:
+            bar_or_baz: Slot[Bar | Baz]
+
+        @template(fake_template_config, object())
+        class Bar:
+            foo: Slot[Foo]
+            dynamico: DynamicClassSlot
+
+        @template(fake_template_config, object())
+        class Baz:
+            value: Var[str]
+
+        @template(fake_template_config, object())
+        class FakeTemplateBackref:
+            slot1: Slot[Baz | Foo | Bar]
+            slot2: Slot[Baz | Foo | Bar]
+
+        retval_backref = cast(type[TemplateIntersectable], FakeTemplateBackref)
+        retval_fordref = cast(type[TemplateIntersectable], FakeTemplateFordref)
+        signature_backref = retval_backref._templatey_signature
+        signature_fordref = retval_fordref._templatey_signature
+
+        assert len(signature_backref.dynamic_class_slot_names) == 0
+        assert len(signature_fordref.dynamic_class_slot_names) == 0\
+
+        # Hard-coding the expected tree is a LOT of tedious manual work, so
+        # instead we're just going to be as pragmatic as possible
+        dycls_root_backref = signature_backref._dynamic_class_slot_tree
+        dycls_root_fordref = signature_fordref._dynamic_class_slot_tree
+        assert dycls_root_backref.is_equivalent(dycls_root_fordref)
+        assert {slot.slot_path for slot in dycls_root_backref} == {
+            ('slot1', Foo),
+            ('slot1', Bar),
+            ('slot2', Foo),
+            ('slot2', Bar),}
+
+        assert (
+            dycls_root_backref.get_route_for('slot1', Foo).subtree
+                .get_route_for('bar_or_baz', Bar).subtree
+        ).dynamic_class_slot_names == {'dynamico'}
+        # Baz has no dynamic class slots; it must not be included
+        assert not (
+            dycls_root_backref.get_route_for('slot1', Foo).subtree
+        ).has_route_for('bar_or_baz', Baz)
+        assert (
+            dycls_root_backref.get_route_for('slot1', Foo).subtree
+                .get_route_for('bar_or_baz', Bar).subtree
+                    .get_route_for('foo', Foo).subtree
+                        .get_route_for('bar_or_baz', Bar).subtree
+        ).dynamic_class_slot_names == {'dynamico'}

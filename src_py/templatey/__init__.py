@@ -1,6 +1,6 @@
 import templatey.prebaked as prebaked  # noqa: PLR0402
 from templatey._types import Content
-from templatey._types import DynamicSlot
+from templatey._types import DynamicClassSlot
 from templatey._types import Slot
 from templatey._types import Var
 from templatey.environments import RenderEnvironment
@@ -13,7 +13,7 @@ from templatey.templates import template
 __all__ = [
     'ComplexContent',
     'Content',
-    'DynamicSlot',
+    'DynamicClassSlot',
     'InjectedValue',
     'RenderEnvironment',
     'Slot',

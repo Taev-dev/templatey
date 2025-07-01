@@ -286,14 +286,16 @@ class SlotTreeNode[T: SlotTreeNode](list[SlotTreeRoute[T]]):
         if other.id_ in previous_encounters:
             return previous_encounters[other.id_] == self.id_
 
-        # First check all the fields, since this should in theory be quick
-        fields_match: bool = True
+        # First check all the fields, since this should in theory be quick.
+        # Yes we could do a bool for this, but doing it as a dict makes it
+        # easier to add in temporary print debugs if required
+        fields_match: dict[str, bool] = {}
         for dc_field in fields(self):
-            if dc_field.init and dc_field.name != 'id_':
-                fields_match &= (
-                    getattr(self, dc_field.name)
-                    == getattr(other, dc_field.name))
-        if not fields_match:
+            field_name = dc_field.name
+            if dc_field.init and field_name != 'id_':
+                fields_match[field_name] = (
+                    getattr(self, field_name) == getattr(other, field_name))
+        if not all(fields_match.values()):
             return False
 
         # Now make sure the routes are the same. This lets us simplify the
@@ -311,7 +313,7 @@ class SlotTreeNode[T: SlotTreeNode](list[SlotTreeRoute[T]]):
         for slot_path in self._index_by_slot_path:
             self_index = self._index_by_slot_path[slot_path]
             self_subtree = self[self_index].subtree
-            other_index = self._index_by_slot_path[slot_path]
+            other_index = other._index_by_slot_path[slot_path]
             other_subtree = other[other_index].subtree
 
             # Recursion is glorious as long as you don't need to worry about
@@ -371,9 +373,15 @@ class PendingSlotTreeNode(SlotTreeNode['PendingSlotTreeNode']):
     def is_insertion_point(self) -> bool:
         return bool(self.insertion_slot_names)
 
+
+@dataclass(kw_only=True, slots=True)
+class DynamicClassSlotTreeNode(SlotTreeNode['DynamicClassSlotTreeNode']):
+    # Note: the str is the slot_name that the route needs to be inserted under
+    dynamic_class_slot_names: set[str] = field(default_factory=set)
+
     @property
-    def requires_transmogrification(self) -> bool:
-        return self.is_recursive
+    def has_dynamic_class_slots(self) -> bool:
+        return bool(self.dynamic_class_slot_names)
 
 
 @dataclass(frozen=True, slots=True)
@@ -819,6 +827,12 @@ def update_encloser_with_trees_from_slot(
     for (
         nested_forward_ref_key, nested_pending_container
     ) in unresolved_nested_forward_refs.items():
+        # Okay, so: technically, we should be checking the concrete slot tree
+        # for any reference loops to the enclosing class before doing this.
+        # The problem is that this can change literally every time a pending
+        # ref is resolved. Therefore, we do that THEN -- and quite literally.
+        # Every time a pending slot is resolved, after resolution is complete,
+        # we go through every tree and merge in the recursive one.
         _extend_pending_slot_tree(
             enclosing_cls=enclosing_cls,
             enclosing_slot_tree_lookup=enclosing_slot_tree_lookup,
@@ -988,9 +1002,6 @@ def _extend_pending_slot_tree(
     # (We can't reuse first_encounters because it's meant for a TemplateClass)
     encountered_node_ids: set[int] = set()
 
-    # It's a little weird to be repurposing the slot tree traversal frame
-    # when the existing and insertion subtrees are always the same, but it
-    # won't break anything, so we might as well.
     stack: \
         list[
             _SlotTreeTraversalFrame[
@@ -1090,3 +1101,159 @@ class _SlotTreeTraversalFrame[ET: SlotTreeNode, IT: SlotTreeNode]:
         there are no more subtrees to merge.
         """
         return self.next_subtree_index >= self._insertion_subtree_len
+
+
+def gather_dynamic_class_slots(
+        enclosing_template_cls: TemplateClass,
+        enclosing_dynamic_slot_names: set[str],
+        enclosing_slot_tree_lookup: dict[TemplateClass, ConcreteSlotTreeNode]
+        ) -> DynamicClassSlotTreeNode:
+    """This is responsible for combining all of the dynamic slots on
+    the enclosing template class with all of the dynamic slots on any
+    nested templates (appropriately offset from the enclosing class,
+    of course).
+
+    This will actually create the slot tree node; if you need to merge
+    into an existing one (because you've resolved a forward ref), see
+    ``merge_dynamic_slots``.
+
+    Note that this can only be called **after** the enclosing slot tree
+    lookup has been fully populated.
+    """
+    tree_root = DynamicClassSlotTreeNode(
+        dynamic_class_slot_names=enclosing_dynamic_slot_names)
+    # This may or may not be present in the lookup. If it is, we need to
+    # handle it like any other slot, because there might be recursion loops.
+    # If not... well, then we'll just skip it in the for loop.
+    # (This seeming redundancy was the most practical way to do this).
+    if (
+        enclosing_template_cls in enclosing_slot_tree_lookup
+        and enclosing_dynamic_slot_names
+    ):
+        merge_dynamic_class_slots(
+            enclosing_template_cls,
+            enclosing_slot_tree_lookup,
+            tree_root,
+            enclosing_template_cls,
+            tree_root)
+
+    for nested_template_cls in enclosing_slot_tree_lookup:
+        # Note: more than just deduplication; it literally won't be available
+        # at this point, because the signature won't be defined yet
+        if nested_template_cls is not enclosing_template_cls:
+            nested_template_signature = cast(
+                type[TemplateIntersectable],
+                nested_template_cls)._templatey_signature
+            # Only merge if it actually HAS dynamic class slots! Otherwise,
+            # we'd be wasting a bunch of tree traversals during render time!
+            if nested_template_signature.dynamic_class_slot_names:
+                merge_dynamic_class_slots(
+                    enclosing_template_cls,
+                    enclosing_slot_tree_lookup,
+                    tree_root,
+                    nested_template_cls,
+                    nested_template_signature._dynamic_class_slot_tree)
+
+    return tree_root
+
+
+def merge_dynamic_class_slots(
+        enclosing_template_cls: TemplateClass,
+        enclosing_slot_tree_lookup: dict[TemplateClass, ConcreteSlotTreeNode],
+        enclosing_dynamic_class_slot_tree: DynamicClassSlotTreeNode,
+        nested_template_cls: TemplateClass,
+        # This needs to be explicit, because it's not always available on the
+        # nested_template_cls (yet -- if enclosing_template_cls is
+        # nested_template_cls, we might still be in initial signature creation)
+        nested_dynamic_class_slot_tree: DynamicClassSlotTreeNode
+        ) -> None:
+    """After the slot tree of a newly-resolved nested template class has
+    been fully merged, call this to also update the enclosing dynamic
+    slots slot tree for that particular nested_template_cls.
+
+    Note that this modifies the tree in-place!
+
+    This is very similar to _extend_pending_slot_tree. The general idea
+    is that we search for every terminus of the existing concrete tree
+    for the nested template class, and then at that terminus, we set
+    the terminus to False (since it isn't used by dynamic class slots)
+    and insert a copy of the nested template class' dynamic class slot
+    tree.
+    """
+    src_concrete_tree = enclosing_slot_tree_lookup[nested_template_cls]
+    dest_copied_tree = _copy_slot_tree(
+        src_concrete_tree,
+        with_node_type=DynamicClassSlotTreeNode)
+    # Note that it's not an issue that this doesn't track the stack, because
+    # we aren't changing the structure of the existing tree at all.
+    # (We can't reuse first_encounters because it's meant for a TemplateClass)
+    encountered_node_ids: set[int] = set()
+
+    stack: \
+        list[
+            _SlotTreeTraversalFrame[
+                DynamicClassSlotTreeNode, ConcreteSlotTreeNode]] = [
+        _SlotTreeTraversalFrame(
+            next_subtree_index=0,
+            existing_subtree=dest_copied_tree,
+            insertion_subtree=src_concrete_tree,
+            first_encounters={})]
+
+    while stack:
+        current_stack_frame = stack[-1]
+        if current_stack_frame.exhausted:
+            stack.pop()
+            continue
+
+        next_slot_route = current_stack_frame.insertion_subtree[
+            current_stack_frame.next_subtree_index]
+        next_slot_name, next_slot_type, next_subtree = next_slot_route
+        # Note that we can't rely upon the indices being the same, because as
+        # soon as we make an insertion, they'll drift out of sync
+        target_subtree = current_stack_frame.existing_subtree.get_route_for(
+            next_slot_name, next_slot_type).subtree
+
+        # Do this ASAP so that we don't accidentally forget it somehow
+        current_stack_frame.next_subtree_index += 1
+
+        # There's never anything to do here; it means we've already done all
+        # of our transforms and insertions, because it's always recursive.
+        # Doesn't matter where on the tree we are. We've already fixed this
+        # node, period, end of story.
+        # (Don't forget that the weird doubling-back we do only applies to the
+        # next EXISTING subtree, but still advances the next (insertion)
+        # subtree. So we're safe in that regard.)
+        if next_subtree.id_ in encountered_node_ids:
+            continue
+        encountered_node_ids.add(next_subtree.id_)
+
+        if next_subtree.is_terminus:
+            # As per docstring, the idea here is that we're converting every
+            # terminus into an insertion point for a different (pending) slot.
+            # Therefore it's no longer a terminus, since the slot is different.
+            target_subtree.is_terminus = False
+            merge_into_slot_tree(
+                # Note: this is intentionally NOT the enclosing_cls! We're
+                # working on an offset tree here, and we need to make sure that
+                # we correctly report the class of the OFFSET root!
+                next_slot_type,
+                None,
+                target_subtree,
+                nested_dynamic_class_slot_tree)
+
+        # Whether or not we found a terminus, we need to check all of the
+        # possibilities on the next subtree. (As a reminder, you can have a
+        # terminus that still has nested nodes!)
+        stack.append(_SlotTreeTraversalFrame(
+            next_subtree_index=0,
+            existing_subtree=target_subtree,
+            insertion_subtree=next_subtree,
+            # Allow the final merging to handle any culling; we don't need to
+            # do it here.
+            first_encounters={}))
+
+    merge_into_slot_tree(
+        enclosing_template_cls,
+        None,
+        enclosing_dynamic_class_slot_tree,
+        dest_copied_tree)
