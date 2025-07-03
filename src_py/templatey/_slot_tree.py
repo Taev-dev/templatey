@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import operator
 from collections.abc import Iterable
+from collections.abc import Sequence
 from copy import copy
 from dataclasses import KW_ONLY
 from dataclasses import InitVar
@@ -15,6 +16,7 @@ from typing import overload
 from templatey._forwardrefs import ForwardRefLookupKey
 from templatey._types import TemplateClass
 from templatey._types import TemplateIntersectable
+from templatey._types import TemplateParamsInstance
 from templatey._types import create_templatey_id
 
 
@@ -1257,3 +1259,119 @@ def merge_dynamic_class_slots(
         None,
         enclosing_dynamic_class_slot_tree,
         dest_copied_tree)
+
+
+@dataclass(slots=True)
+class _DynaClsExtractorFrame:
+    active_instance: TemplateParamsInstance
+    active_subtree: DynamicClassSlotTreeNode
+    target_subtree_index: int
+    target_instance_index: int
+    target_instances_count: int = field(kw_only=True, default=0)
+    target_instances: Sequence[TemplateParamsInstance] = field(
+        kw_only=True, init=False)
+
+    _active_subtree_len: int = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self):
+        self._active_subtree_len = len(self.active_subtree)
+
+    @property
+    def exhausted(self) -> bool:
+        return self.target_subtree_index >= self._active_subtree_len
+
+
+def extract_dynamic_template_classes(
+        root_template_instance: TemplateParamsInstance,
+        dynamic_class_slot_tree: DynamicClassSlotTreeNode
+        ) -> set[TemplateClass]:
+    """Given a root template instance and its associated dynamic class
+    slot tree, walks the tree and extracts all template classes for
+    slots defined as having a dynamic class.
+
+    This does no culling based on whether or not the class was already
+    loaded; it simply constructs a set of all encountered dynamic
+    template classes.
+    """
+    dynamic_template_classes: set[TemplateClass] = set()
+    stack: list[_DynaClsExtractorFrame] = [
+        _DynaClsExtractorFrame(
+            active_instance=root_template_instance,
+            active_subtree=dynamic_class_slot_tree,
+            target_subtree_index=0,
+            target_instance_index=0)]
+
+    while stack:
+        frame = stack[-1]
+        active_instance = frame.active_instance
+        active_subtree = frame.active_subtree
+
+        if frame.exhausted:
+            # Yes, we only want to do this when the frame is exhausted. This
+            # way, we only perform the check once per node instead of once
+            # per subtree!
+            for dynamic_slot_name in active_subtree.dynamic_class_slot_names:
+                dynamic_template_classes.update(
+                    type(slot_instance)
+                    for slot_instance
+                    in getattr(active_instance, dynamic_slot_name))
+
+            stack.pop()
+            continue
+
+        slot_route = frame.active_subtree[frame.target_subtree_index]
+        slot_name, slot_type, subtree = slot_route
+        target_instance_index = frame.target_instance_index
+
+        # This is, in a way, a nested stack, but we're maintaining
+        # the stack state within the _DynaClsExtractorFrame.
+        # At any rate, we use the zero-index iteration of the loop to
+        # memoize some values on the stack frame.
+        if target_instance_index == 0:
+            target_instances = getattr(active_instance, slot_name)
+            target_instances_count = len(target_instances)
+
+            # Check in advance if there are no target instances at all,
+            # and if so, skip the whole thing. This isn't just for
+            # performance; the processing logic depends on it.
+            if target_instances_count > 0:
+                frame.target_instances_count = target_instances_count
+                frame.target_instances = target_instances
+            else:
+                # Note: this is critical! Otherwise we'll infinitely loop.
+                frame.target_subtree_index += 1
+                continue
+
+        else:
+            target_instances_count = frame.target_instances_count
+            # We've exhausted the target instances; reset the state for
+            # the next slot tree route and then continue.
+            if frame.target_instance_index >= target_instances_count:
+                # Note: we're deliberately skipping the target instances
+                # themselves, because it'll just get overwritten the next
+                # time around, so we can save ourselves an operation.
+                frame.target_instances_count = 0
+                frame.target_instance_index = 0
+                # Note: this is critical! Otherwise we'll infinitely loop.
+                frame.target_subtree_index += 1
+                continue
+
+            # We still have some instances to target; normalize the state
+            # so that we can operate on them.
+            target_instances = frame.target_instances
+
+        # Okay, status check: we have our stack frame state configured
+        # correctly, and we have target instances to check.
+        instance_to_check = target_instances[target_instance_index]
+        # Note: exact match here; not subclassing! Subclassing breaks too
+        # many things, so we don't support it.
+        if type(instance_to_check) is slot_type:
+            stack.append(_DynaClsExtractorFrame(
+                active_instance=instance_to_check,
+                active_subtree=subtree,
+                target_subtree_index=0,
+                target_instance_index=0,))
+
+        frame.target_instance_index += 1
+
+    return dynamic_template_classes

@@ -179,8 +179,7 @@ class Provenance:
         enough
         """
         provenances: list[Provenance] = []
-        stack: list[_TreeFlattenerFrame]
-        stack = [
+        stack: list[_TreeFlattenerFrame] = [
             _TreeFlattenerFrame(
                 active_instance=root_template_instance,
                 active_subtree=root_slot_tree,
@@ -212,8 +211,8 @@ class Provenance:
 
             # This is, in a way, a nested stack, but we're maintaining
             # the stack state within the _TreeFlattenerFrame.
-            # At any rate, we use the zero-index to memoize some values on
-            # the stack frame.
+            # At any rate, we use the zero-index iteration of the loop
+            # to memoize some values on the stack frame.
             if target_instance_index == 0:
                 target_instances = getattr(
                     this_frame.active_instance,
