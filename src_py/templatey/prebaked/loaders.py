@@ -10,9 +10,9 @@ except ImportError:
     anyio = None
 from docnote import ClcNote
 
+from templatey._types import TemplateParamsInstance
 from templatey.environments import AsyncTemplateLoader
 from templatey.environments import SyncTemplateLoader
-from templatey.templates import TemplateParamsInstance
 
 
 class DictTemplateLoader[L: object](

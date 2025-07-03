@@ -12,6 +12,8 @@ from typing import runtime_checkable
 
 from templatey._bootstrapping import PARSED_EMPTY_TEMPLATE
 from templatey._bootstrapping import EmptyTemplate
+from templatey._types import TemplateIntersectable
+from templatey._types import TemplateParamsInstance
 from templatey.exceptions import MismatchedRenderColor
 from templatey.exceptions import MismatchedTemplateEnvironment
 from templatey.exceptions import MismatchedTemplateSignature
@@ -22,8 +24,6 @@ from templatey.renderer import FuncExecutionRequest
 from templatey.renderer import FuncExecutionResult
 from templatey.renderer import render_driver
 from templatey.templates import InjectedValue
-from templatey.templates import TemplateIntersectable
-from templatey.templates import TemplateParamsInstance
 
 # Note: strings here will be escaped. InjectedValues may decide whether or not
 # escaping should be applied. Nested templates will not be escaped.
@@ -303,13 +303,15 @@ class RenderEnvironment:
         template_signature = template_class._templatey_signature
         variable_names = template_signature.var_names
         slot_names = template_signature.slot_names
+        dynamic_class_slot_names = template_signature.dynamic_class_slot_names
         content_names = template_signature.content_names
 
         if strict_mode:
             variables_mismatch = (
                 parsed_template_resource.variable_names ^ variable_names)
             slot_mismatch = (
-                parsed_template_resource.slot_names ^ slot_names)
+                parsed_template_resource.slot_names
+                ^ (slot_names | dynamic_class_slot_names))
             content_mismatch = (
                 parsed_template_resource.content_names ^ content_names)
 
@@ -317,7 +319,8 @@ class RenderEnvironment:
             variables_mismatch = (
                 parsed_template_resource.variable_names - variable_names)
             slot_mismatch = (
-                parsed_template_resource.slot_names - slot_names)
+                parsed_template_resource.slot_names
+                - (slot_names | dynamic_class_slot_names))
             content_mismatch = (
                 parsed_template_resource.content_names - content_names)
 

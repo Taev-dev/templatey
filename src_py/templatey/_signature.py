@@ -13,10 +13,12 @@ from templatey._forwardrefs import ForwardRefLookupKey
 from templatey._forwardrefs import is_forward_reference_proxy
 from templatey._provenance import Provenance
 from templatey._slot_tree import ConcreteSlotTreeNode
+from templatey._slot_tree import DynamicClassSlotTreeNode
 from templatey._slot_tree import PendingSlotTreeContainer
 from templatey._slot_tree import PendingSlotTreeNode
 from templatey._slot_tree import SlotTreeNode
 from templatey._slot_tree import SlotTreeRoute
+from templatey._slot_tree import gather_dynamic_class_slots
 from templatey._slot_tree import merge_into_slot_tree
 from templatey._slot_tree import update_encloser_with_trees_from_slot
 from templatey._types import TemplateClass
@@ -46,10 +48,14 @@ class TemplateSignature:
     template_cls_ref: ref[TemplateClass]
     _forward_ref_lookup_key: ForwardRefLookupKey
 
+    # Note that these are all ONLY the direct nesteds; these do not include
+    # anything from deeper in the slot tree.
     slot_names: frozenset[str]
     var_names: frozenset[str]
     content_names: frozenset[str]
+    dynamic_class_slot_names: frozenset[str]
 
+    _dynamic_class_slot_tree: DynamicClassSlotTreeNode
     # Note that these contain all included types, not just the ones on the
     # outermost layer that are associated with the signature. In other words,
     # they include the flattened recursion of all included slots, all the way
@@ -103,6 +109,7 @@ class TemplateSignature:
             cls,
             template_cls: type,
             slots: dict[str, _SlotAnnotation],
+            dynamic_class_slot_names: set[str],
             vars_: dict[str, type | type[ForwardReferenceProxyClass]],
             content: dict[str, type | type[ForwardReferenceProxyClass]],
             *,
@@ -199,12 +206,34 @@ class TemplateSignature:
                     .pending_root_node
                     .insertion_slot_names.add(direct_pending_slot_name))
 
+        # Okay, so here's the deal. Every time we add a slot,
+        # might create a recursive reference loop (if it had a forward ref to
+        # the current enclosing class). So far so good. The problem
+        # is, this means that existing slot trees will be incomplete.
+        # Therefore, at the end of the process, we always circle back and check
+        # for a self-referential slot tree, and if it exists, merge it into
+        # all the rest.
+        self_referential_recursive_tree = tree_wip.get(template_cls)
+        if self_referential_recursive_tree is not None:
+            for slot_type, slot_tree in tree_wip.items():
+                if slot_type is not template_cls:
+                    merge_into_slot_tree(
+                        template_cls,
+                        slot_type,
+                        slot_tree,
+                        self_referential_recursive_tree)
+
         # Oh thank god.
         tree_wip.default_factory = None
         return cls(
             _forward_ref_lookup_key=forward_ref_lookup_key,
             template_cls_ref=ref(template_cls),
             slot_names=slot_names,
+            dynamic_class_slot_names=frozenset(dynamic_class_slot_names),
+            _dynamic_class_slot_tree=gather_dynamic_class_slots(
+                template_cls,
+                dynamic_class_slot_names,
+                tree_wip),
             var_names=var_names,
             content_names=content_names,
             _slot_tree_lookup=tree_wip,
@@ -287,6 +316,36 @@ class TemplateSignature:
 
         self.refresh_included_template_classes_snapshot()
         self.refresh_pending_forward_ref_registration()
+
+        # Okay, so here's the deal. Every time we resolve a forward ref, we
+        # might create a recursive reference loop. So far so good. The problem
+        # is, this means that existing slot trees will be incomplete.
+        # therefore, at the end of the process, we always circle back and check
+        # for a self-referential slot tree, and if it exists, merge it into
+        # all the rest.
+        self_referential_recursive_tree = self._slot_tree_lookup.get(
+            enclosing_template_cls)
+        if self_referential_recursive_tree is not None:
+            for slot_type, slot_tree in self._slot_tree_lookup.items():
+                if slot_type is not enclosing_template_cls:
+                    merge_into_slot_tree(
+                        enclosing_template_cls,
+                        slot_type,
+                        slot_tree,
+                        self_referential_recursive_tree)
+
+        # Right, so the thing is, this might have introduced a bunch of new
+        # recursive reference loops, and those might be buried within several
+        # layers of pending trees and stuff. This isn't suuuuper performance
+        # critical, so by far the easiest thing to do is just rebuild the
+        # tree in its entirety.
+        # Note: I suppose in theory we could maybe just do the same as we're
+        # doing for the normal slot trees, and just constantly re-merge any
+        # self_referential_recursive_tree?
+        self._dynamic_class_slot_tree = gather_dynamic_class_slots(
+            enclosing_template_cls,
+            set(self.dynamic_class_slot_names),
+            self._slot_tree_lookup)
 
     def stringify_all(self) -> str:
         """This is a debug method that creates a prettified string

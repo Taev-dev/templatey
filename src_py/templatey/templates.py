@@ -11,14 +11,12 @@ from collections.abc import Callable
 from collections.abc import Collection
 from collections.abc import Iterable
 from collections.abc import Mapping
-from collections.abc import Sequence
 from dataclasses import _MISSING_TYPE
 from dataclasses import Field
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import fields
 from textwrap import dedent
-from types import EllipsisType
 from types import FrameType
 from typing import Annotated
 from typing import Any
@@ -28,60 +26,21 @@ from typing import dataclass_transform
 from typing import overload
 
 from docnote import ClcNote
-from typing_extensions import TypeIs
 
-from templatey._annotations import InterfaceAnnotation
 from templatey._annotations import InterfaceAnnotationFlavor
 from templatey._forwardrefs import ForwardRefGeneratingNamespaceLookup
 from templatey._forwardrefs import ForwardRefLookupKey
 from templatey._forwardrefs import extract_frame_scope_id
 from templatey._forwardrefs import resolve_forward_references
 from templatey._signature import TemplateSignature
-from templatey._types import TemplateIntersectable
-from templatey._types import TemplateParamsInstance
+from templatey._types import Content
+from templatey._types import DynamicClassSlot
+from templatey._types import Slot
+from templatey._types import Var
 from templatey.interpolators import NamedInterpolator
 from templatey.parser import InterpolationConfig
 
 logger = logging.getLogger(__name__)
-
-
-# Technically, these should use the TemplateIntersectable from templates.py,
-# but since we can't define type intersections yet...
-type Slot[T: TemplateParamsInstance] = Annotated[
-    Sequence[T] | EllipsisType,
-    InterfaceAnnotation(InterfaceAnnotationFlavor.SLOT)]
-type Var[T] = Annotated[
-    T | EllipsisType,
-    InterfaceAnnotation(InterfaceAnnotationFlavor.VARIABLE)]
-type Content[T] = Annotated[
-    T,
-    InterfaceAnnotation(InterfaceAnnotationFlavor.CONTENT)]
-
-
-def is_template_class(cls: type) -> TypeIs[type[TemplateIntersectable]]:
-    """Rather than relying upon @runtime_checkable, which doesn't work
-    with protocols with ClassVars, we implement our own custom checker
-    here for narrowing the type against TemplateIntersectable. Note
-    that this also, I think, might be usable for some of the issues
-    re: the missing intersection type in python, though support might be
-    unreliable depending on which type checker is in use.
-    """
-    return (
-        hasattr(cls, '_templatey_config')
-        and hasattr(cls, '_templatey_resource_locator')
-        and hasattr(cls, '_templatey_signature')
-    )
-
-
-def is_template_instance(instance: object) -> TypeIs[TemplateIntersectable]:
-    """Rather than relying upon @runtime_checkable, which doesn't work
-    with protocols with ClassVars, we implement our own custom checker
-    here for narrowing the type against TemplateIntersectable. Note
-    that this also, I think, might be usable for some of the issues
-    re: the missing intersection type in python, though support might be
-    unreliable depending on which type checker is in use.
-    """
-    return is_template_class(type(instance))
 
 
 class VariableEscaper(Protocol):
@@ -359,10 +318,12 @@ def _get_first_frame_from_other_module() -> FrameType | None:
     return upstack_frame
 
 
-def _classify_interface_field_flavor(
+# Yes, this is awkward with a bazillion return statements, but in this case,
+# clarity is better than elegance
+def _classify_interface_field_flavor(  # noqa: PLR0911
         parent_class_type_hints: dict[str, Any],
         template_field: Field
-        ) -> tuple[InterfaceAnnotationFlavor, type] | None:
+        ) -> tuple[set[InterfaceAnnotationFlavor], type | None] | None:
     """For a dataclass field, determines whether it was declared as a
     var, slot, or content.
 
@@ -375,13 +336,44 @@ def _classify_interface_field_flavor(
     anno_origin = typing.get_origin(resolved_field_type)
     if anno_origin is Var:
         nested_type, = typing.get_args(resolved_field_type)
-        return InterfaceAnnotationFlavor.VARIABLE, nested_type
+        return {InterfaceAnnotationFlavor.VARIABLE}, nested_type
     elif anno_origin is Slot:
         nested_type, = typing.get_args(resolved_field_type)
-        return InterfaceAnnotationFlavor.SLOT, nested_type
+        return {InterfaceAnnotationFlavor.SLOT}, nested_type
     elif anno_origin is Content:
         nested_type, = typing.get_args(resolved_field_type)
-        return InterfaceAnnotationFlavor.CONTENT, nested_type
+        return {InterfaceAnnotationFlavor.CONTENT}, nested_type
+    elif anno_origin is DynamicClassSlot:
+        return {
+            InterfaceAnnotationFlavor.SLOT,
+            InterfaceAnnotationFlavor.DYNAMIC
+        }, None
+
+    # This is all if there's no parameter passed, ex ``foo: Var`` or
+    # ``bar: Slot``
+    elif anno_origin is None:
+        if resolved_field_type is Var:
+            return {InterfaceAnnotationFlavor.VARIABLE}, None
+
+        elif resolved_field_type is Content:
+            return {InterfaceAnnotationFlavor.CONTENT}, None
+
+        elif resolved_field_type is DynamicClassSlot:
+            return {
+                InterfaceAnnotationFlavor.SLOT,
+                InterfaceAnnotationFlavor.DYNAMIC
+            }, None
+
+        elif resolved_field_type is Slot:
+            raise TypeError(
+                '``Slot`` annotations require a concrete slot class as a '
+                + 'parameter!')
+
+        else:
+            return None
+
+    # So there was a parameter passed, but the generic wasn't one of ours.
+    # Therefore, we can't do anything with it.
     else:
         return None
 
@@ -508,6 +500,7 @@ def make_template_definition[T: type](
             cls, localns=ChainMap(*prioritized_lookups))
 
     slots = {}
+    dynamic_slots = {}
     vars_ = {}
     content = {}
     prerenderers = {}
@@ -526,15 +519,18 @@ def make_template_definition[T: type](
                 + 'slots, and content!')
 
         else:
-            field_flavor, wrapped_type = field_classification
+            field_flavors, wrapped_type = field_classification
 
             # A little awkward to effectively just repeat the comparison we did
             # when classifying, but that makes testing easier and control flow
             # clearer
-            if field_flavor is InterfaceAnnotationFlavor.VARIABLE:
+            if InterfaceAnnotationFlavor.VARIABLE in field_flavors:
                 dest_lookup = vars_
-            elif field_flavor is InterfaceAnnotationFlavor.SLOT:
-                dest_lookup = slots
+            elif InterfaceAnnotationFlavor.SLOT in field_flavors:
+                if InterfaceAnnotationFlavor.DYNAMIC in field_flavors:
+                    dest_lookup = dynamic_slots
+                else:
+                    dest_lookup = slots
             else:
                 dest_lookup = content
 
@@ -545,6 +541,7 @@ def make_template_definition[T: type](
     cls._templatey_signature = TemplateSignature.new(
         template_cls=cls,
         slots=slots,
+        dynamic_class_slot_names=set(dynamic_slots),
         vars_=vars_,
         content=content,
         forward_ref_lookup_key=template_forward_ref)

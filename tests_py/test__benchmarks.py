@@ -8,11 +8,11 @@ import anyio
 import jinja2
 import pytest
 
+from templatey._types import Slot
+from templatey._types import Var
 from templatey.environments import RenderEnvironment
 from templatey.prebaked.loaders import DictTemplateLoader
 from templatey.prebaked.template_configs import html
-from templatey.templates import Slot
-from templatey.templates import Var
 from templatey.templates import template
 
 _ITERATION_COUNT = 1000

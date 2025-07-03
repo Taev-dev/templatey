@@ -25,7 +25,11 @@ from templatey._provenance import Provenance
 from templatey._provenance import ProvenanceNode
 from templatey._signature import TemplateSignature
 from templatey._slot_tree import SlotTreeNode
+from templatey._slot_tree import extract_dynamic_template_classes
 from templatey._types import TemplateClass
+from templatey._types import TemplateIntersectable
+from templatey._types import TemplateParamsInstance
+from templatey._types import is_template_instance
 from templatey.exceptions import MismatchedTemplateSignature
 from templatey.exceptions import TemplateFunctionFailure
 from templatey.parser import InterpolatedContent
@@ -39,9 +43,6 @@ from templatey.parser import ParsedTemplateResource
 from templatey.templates import ComplexContent
 from templatey.templates import InjectedValue
 from templatey.templates import TemplateConfig
-from templatey.templates import TemplateIntersectable
-from templatey.templates import TemplateParamsInstance
-from templatey.templates import is_template_instance
 
 logger = logging.getLogger(__name__)
 
@@ -557,8 +558,13 @@ class _RenderContext:
             # invocations, regardless of whether or not an execution or load
             # was actually required.
             for batch in batches:
+                local_root_instance = batch.local_root_instance
                 to_load.update(batch.template_backlog)
                 to_execute.extend(batch.function_backlog)
+                to_load.update(extract_dynamic_template_classes(
+                    local_root_instance,
+                    cast(TemplateIntersectable, local_root_instance)
+                        ._templatey_signature._dynamic_class_slot_tree))
             to_load.difference_update(template_preload)
 
             yield RenderEnvRequest(

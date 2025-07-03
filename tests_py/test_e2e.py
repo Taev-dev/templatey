@@ -8,6 +8,12 @@ from dataclasses import dataclass
 
 import pytest
 
+from templatey import Content
+from templatey import DynamicClassSlot
+from templatey import Slot
+from templatey import Var
+from templatey import param
+from templatey import template
 from templatey.environments import RenderEnvironment
 from templatey.interpolators import NamedInterpolator
 from templatey.prebaked.env_funcs import inject_templates
@@ -15,12 +21,7 @@ from templatey.prebaked.loaders import DictTemplateLoader
 from templatey.prebaked.template_configs import html
 from templatey.prebaked.template_configs import html_escaper
 from templatey.prebaked.template_configs import html_verifier
-from templatey.templates import Content
-from templatey.templates import Slot
 from templatey.templates import TemplateConfig
-from templatey.templates import Var
-from templatey.templates import param
-from templatey.templates import template
 
 
 @dataclass
@@ -617,7 +618,8 @@ class TestApiE2E:
     def test_forward_reference_loop_with_formatted_var(self):
         """Forward reference loops must render correctly. Variables
         with __format__ declared must correctly use their rendered value
-        instead of a repr, str, or other such shenanigans.
+        instead of a repr, str, or other such shenanigans. Dynamic
+        class slots must work, even after injection.
         """
         def add_class():
             return ('mystyleclass',)
@@ -659,10 +661,16 @@ class TestApiE2E:
                 {slot.main}
             </main>
             <footer>
+                {slot.footer}
             </footer>
             </body>
             </html>
             '''
+
+        injector = '{@inject_templates(content.to_inject)}'
+        spantext = '<span>{slot.span}</span>'
+        spantext_em = '<em>{var.text}</em>'
+        spantext_strong = '<strong>{var.text}</strong>'
 
         # Note: keep this as a forward ref until we have more test coverage in
         # test_templates; this balances out the multiples_recursion test we
@@ -673,6 +681,7 @@ class TestApiE2E:
             nav: Slot[NavSectionTemplate]
             title: Content[str]
             main: Slot[DivTemplate]
+            footer: Slot[TemplateWithInjection]
 
         @template(html, 'nav_section')
         class NavSectionTemplate:
@@ -692,15 +701,35 @@ class TestApiE2E:
             div: Slot[DivTemplate]
             body: Var[VarWithFormatting | None] = None
 
+        @template(html, 'injector')
+        class TemplateWithInjection:
+            to_inject: Content[TextSpanTemplate]
+
+        @template(html, 'spantext')
+        class TextSpanTemplate:
+            span: DynamicClassSlot
+
+        @template(html, 'spantext_em')
+        class EmTextTemplate:
+            text: Var[str]
+
+        @template(html, 'spantext_strong')
+        class StrongTextTemplate:
+            text: Var[str]
+
         render_env = RenderEnvironment(
-            env_functions=(add_class,),
+            env_functions=(add_class, inject_templates),
             template_loader=DictTemplateLoader(
                 templates={
                     'div': div,
                     'page': page,
                     'nav_section': nav_section,
                     'nav_item': nav_item,
-                    'nav_link': nav_link}))
+                    'nav_link': nav_link,
+                    'injector': injector,
+                    'spantext': spantext,
+                    'spantext_em': spantext_em,
+                    'spantext_strong': spantext_strong,}))
 
         render_result = render_env.render_sync(
             PageTemplate(
@@ -751,7 +780,14 @@ class TestApiE2E:
                                                     NavLinkTemplate(
                                                         target='/docs/bar',
                                                         name='Bar docs'),
-                                                ])])])])]))
+                                                ])])])])],
+                footer=[
+                    TemplateWithInjection(
+                        to_inject=TextSpanTemplate(
+                            span=[
+                                EmTextTemplate(text='hello, world. '),
+                                StrongTextTemplate(
+                                    text='is anybody listening?')]))]))
 
         assert render_result == '''
             <html>
@@ -799,10 +835,11 @@ class TestApiE2E:
                 </div>
             </main>
             <footer>
+                <span><em>hello, world. </em><strong>is anybody listening?</strong></span>
             </footer>
             </body>
             </html>
-            '''  # noqa: W293
+            '''  # noqa: E501, W293
 
     def test_sibling_slots(self):
         """A template with two identical union slot types under
