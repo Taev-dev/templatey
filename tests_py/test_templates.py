@@ -666,7 +666,7 @@ class TestMakeTemplateDefinition:
         signature_fordref = retval_fordref._templatey_signature
 
         assert len(signature_backref.dynamic_class_slot_names) == 0
-        assert len(signature_fordref.dynamic_class_slot_names) == 0\
+        assert len(signature_fordref.dynamic_class_slot_names) == 0
 
         # Hard-coding the expected tree is a LOT of tedious manual work, so
         # instead we're just going to be as pragmatic as possible
