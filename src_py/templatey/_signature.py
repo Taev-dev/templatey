@@ -41,6 +41,10 @@ class TemplateSignature:
 
     Not meant to be created directly; instead, you should use the
     TemplateSignature.new() convenience method.
+
+    TODO: we need to get way more consistent about public/private attr
+    conventions; this is a holdover from when this was within a public
+    module.
     """
     # It's nice to have this available, especially when resolving forward refs,
     # but unlike eg the slot tree, it's trivially easy for us to avoid GC
@@ -56,6 +60,7 @@ class TemplateSignature:
     dynamic_class_slot_names: frozenset[str]
 
     _dynamic_class_slot_tree: DynamicClassSlotTreeNode
+    _ordered_dynamic_class_slot_names: list[str] = field(init=False)
     # Note that these contain all included types, not just the ones on the
     # outermost layer that are associated with the signature. In other words,
     # they include the flattened recursion of all included slots, all the way
@@ -71,6 +76,8 @@ class TemplateSignature:
     def __post_init__(self):
         self.refresh_included_template_classes_snapshot()
         self.refresh_pending_forward_ref_registration()
+        self._ordered_dynamic_class_slot_names = sorted(
+            self.dynamic_class_slot_names)
 
     def refresh_included_template_classes_snapshot(self):
         """Call this when resolving forward references to apply any

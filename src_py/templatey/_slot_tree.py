@@ -1271,17 +1271,36 @@ class _DynaClsExtractorFrame:
     target_instances: Sequence[TemplateParamsInstance] = field(
         kw_only=True, init=False)
 
+    # See note in extract_dynamic_class_slot_types for why this is necessary
+    # in addition to the encountered instance IDs
+    direct_recursion_guard: set[int]
+    target_slot_name_index: int = 0
+
     _active_subtree_len: int = field(init=False, repr=False, compare=False)
+    _ordered_slot_names: list[str] = field(
+        init=False, repr=False, compare=False)
+    _ordered_slot_names_len: int = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
         self._active_subtree_len = len(self.active_subtree)
+        self._ordered_slot_names = ordered_slot_names = cast(
+            TemplateIntersectable, self.active_instance
+        )._templatey_signature._ordered_dynamic_class_slot_names
+        self._ordered_slot_names_len = len(ordered_slot_names)
 
     @property
-    def exhausted(self) -> bool:
+    def subtrees_exhausted(self) -> bool:
         return self.target_subtree_index >= self._active_subtree_len
 
+    @property
+    def dynacls_slots_exhausted(self) -> bool:
+        return self.target_slot_name_index >= self._ordered_slot_names_len
 
-def extract_dynamic_template_classes(
+
+# Yes, this is really complicated and really long. But unfortunately, the
+# combinatorics are really bad, function calls in python are expensive, and
+# this is on the critical hot path for rendering. So it's a calculated smell.
+def extract_dynamic_class_slot_types(  # noqa: C901, PLR0912, PLR0915
         root_template_instance: TemplateParamsInstance,
         dynamic_class_slot_tree: DynamicClassSlotTreeNode
         ) -> set[TemplateClass]:
@@ -1293,33 +1312,103 @@ def extract_dynamic_template_classes(
     loaded; it simply constructs a set of all encountered dynamic
     template classes.
     """
+    encountered_instance_ids: set[int] = set()
     dynamic_template_classes: set[TemplateClass] = set()
     stack: list[_DynaClsExtractorFrame] = [
         _DynaClsExtractorFrame(
             active_instance=root_template_instance,
             active_subtree=dynamic_class_slot_tree,
             target_subtree_index=0,
-            target_instance_index=0)]
+            target_instance_index=0,
+            direct_recursion_guard={id(root_template_instance)})]
 
     while stack:
         frame = stack[-1]
         active_instance = frame.active_instance
+        active_instance_id = id(active_instance)
         active_subtree = frame.active_subtree
 
-        if frame.exhausted:
-            # Yes, we only want to do this when the frame is exhausted. This
-            # way, we only perform the check once per node instead of once
-            # per subtree!
-            for dynamic_slot_name in active_subtree.dynamic_class_slot_names:
-                dynamic_template_classes.update(
-                    type(slot_instance)
-                    for slot_instance
-                    in getattr(active_instance, dynamic_slot_name))
-
+        if active_instance_id in encountered_instance_ids:
             stack.pop()
             continue
 
-        slot_route = frame.active_subtree[frame.target_subtree_index]
+        # Note: this is also the branch we use for "we only want to do this
+        # N times per frame, not N times per subtree"
+        if frame.subtrees_exhausted:
+            if frame.dynacls_slots_exhausted:
+                stack.pop()
+                encountered_instance_ids.add(active_instance_id)
+
+            else:
+                slot_name = frame._ordered_slot_names[
+                    frame.target_slot_name_index]
+                target_instance_index = frame.target_instance_index
+                print(target_instance_index)
+                print(active_instance_id)
+
+                # As with subtree checking, this is effectively a nested stack,
+                # but we're maintaining state within the current frame to
+                # decrease resource usage. See below for more explanation; it's
+                # basically the same logic.
+                if target_instance_index == 0:
+                    target_instances = getattr(active_instance, slot_name)
+                    target_instances_count = len(target_instances)
+
+                    if target_instances_count <= 0:
+                        frame.target_slot_name_index += 1
+                        continue
+
+                    else:
+                        frame.target_instances_count = target_instances_count
+                        frame.target_instances = target_instances
+
+                else:
+                    target_instances_count = frame.target_instances_count
+                    if frame.target_instance_index >= target_instances_count:
+                        frame.target_instances_count = 0
+                        frame.target_instance_index = 0
+                        frame.target_slot_name_index += 1
+                        continue
+
+                    target_instances = frame.target_instances
+
+                instance_to_check = target_instances[target_instance_index]
+                # Note: we need to special-case this separately from indirect
+                # recursion, because we can't add the current instance ID to
+                # encountered_instance_ids until we're done processing the
+                # slots (otherwise we'd skip all of them!).
+                # Additionally, this needs to be a stacked-set, and not a
+                # simple comparison between instance_to_check and
+                # active_instance_id, because otherwise, indirect recursion
+                # (A -> B -> A -> ...) will infinitely descend without ever
+                # marking anything as encountered. Doing it this way ensures
+                # that only the outermost level is responsible for checking A.
+                direct_recursion_guard = frame.direct_recursion_guard
+                instance_to_check_id = id(instance_to_check)
+                if instance_to_check_id not in direct_recursion_guard:
+                    xable_to_check = cast(
+                        TemplateIntersectable, instance_to_check)
+                    dynamic_template_classes.add(type(instance_to_check))
+                    # Here we also recurse to check the dynamic-class-slot
+                    # instance to check if it, too, has dynamic classes. This
+                    # is where the combinatorics really explode, but we're
+                    # writing the code this way to keep the size of the stack
+                    # minimal.
+                    stack.append(_DynaClsExtractorFrame(
+                        active_instance=instance_to_check,
+                        active_subtree=
+                            xable_to_check._templatey_signature
+                            ._dynamic_class_slot_tree,
+                        target_subtree_index=0,
+                        target_instance_index=0,
+                        direct_recursion_guard=
+                            direct_recursion_guard | {instance_to_check_id}))
+
+                frame.target_instance_index += 1
+
+            continue
+
+        slot_route = active_subtree[frame.target_subtree_index]
         slot_name, slot_type, subtree = slot_route
         target_instance_index = frame.target_instance_index
 
@@ -1334,13 +1423,13 @@ def extract_dynamic_template_classes(
             # Check in advance if there are no target instances at all,
             # and if so, skip the whole thing. This isn't just for
             # performance; the processing logic depends on it.
-            if target_instances_count > 0:
-                frame.target_instances_count = target_instances_count
-                frame.target_instances = target_instances
-            else:
+            if target_instances_count <= 0:
                 # Note: this is critical! Otherwise we'll infinitely loop.
                 frame.target_subtree_index += 1
                 continue
+            else:
+                frame.target_instances_count = target_instances_count
+                frame.target_instances = target_instances
 
         else:
             target_instances_count = frame.target_instances_count
@@ -1370,7 +1459,8 @@ def extract_dynamic_template_classes(
                 active_instance=instance_to_check,
                 active_subtree=subtree,
                 target_subtree_index=0,
-                target_instance_index=0,))
+                target_instance_index=0,
+                direct_recursion_guard=frame.direct_recursion_guard))
 
         frame.target_instance_index += 1
 

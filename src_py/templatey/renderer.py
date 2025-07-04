@@ -25,7 +25,7 @@ from templatey._provenance import Provenance
 from templatey._provenance import ProvenanceNode
 from templatey._signature import TemplateSignature
 from templatey._slot_tree import SlotTreeNode
-from templatey._slot_tree import extract_dynamic_template_classes
+from templatey._slot_tree import extract_dynamic_class_slot_types
 from templatey._types import TemplateClass
 from templatey._types import TemplateIntersectable
 from templatey._types import TemplateParamsInstance
@@ -561,7 +561,7 @@ class _RenderContext:
                 local_root_instance = batch.local_root_instance
                 to_load.update(batch.template_backlog)
                 to_execute.extend(batch.function_backlog)
-                to_load.update(extract_dynamic_template_classes(
+                to_load.update(extract_dynamic_class_slot_types(
                     local_root_instance,
                     cast(TemplateIntersectable, local_root_instance)
                         ._templatey_signature._dynamic_class_slot_tree))
