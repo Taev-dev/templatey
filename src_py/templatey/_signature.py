@@ -52,11 +52,12 @@ class TemplateSignature:
     template_cls_ref: ref[TemplateClass]
     _forward_ref_lookup_key: ForwardRefLookupKey
 
+    data_names: frozenset[str]
+    var_names: frozenset[str]
+    content_names: frozenset[str]
     # Note that these are all ONLY the direct nesteds; these do not include
     # anything from deeper in the slot tree.
     slot_names: frozenset[str]
-    var_names: frozenset[str]
-    content_names: frozenset[str]
     dynamic_class_slot_names: frozenset[str]
 
     _dynamic_class_slot_tree: DynamicClassSlotTreeNode
@@ -117,6 +118,7 @@ class TemplateSignature:
             template_cls: type,
             slots: dict[str, _SlotAnnotation],
             dynamic_class_slot_names: set[str],
+            data: dict[str, None],
             vars_: dict[str, type | type[ForwardReferenceProxyClass]],
             content: dict[str, type | type[ForwardReferenceProxyClass]],
             *,
@@ -241,6 +243,7 @@ class TemplateSignature:
                 template_cls,
                 dynamic_class_slot_names,
                 tree_wip),
+            data_names=frozenset(data),
             var_names=var_names,
             content_names=content_names,
             _slot_tree_lookup=tree_wip,

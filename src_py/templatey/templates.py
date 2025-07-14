@@ -323,7 +323,7 @@ def _get_first_frame_from_other_module() -> FrameType | None:
 def _classify_interface_field_flavor(  # noqa: PLR0911
         parent_class_type_hints: dict[str, Any],
         template_field: Field
-        ) -> tuple[set[InterfaceAnnotationFlavor], type | None] | None:
+        ) -> tuple[set[InterfaceAnnotationFlavor], type | None]:
     """For a dataclass field, determines whether it was declared as a
     var, slot, or content.
 
@@ -349,8 +349,8 @@ def _classify_interface_field_flavor(  # noqa: PLR0911
             InterfaceAnnotationFlavor.DYNAMIC
         }, None
 
-    # This is all if there's no parameter passed, ex ``foo: Var`` or
-    # ``bar: Slot``
+    # This is all if there's a generic annotation with no parameter passed,
+    # ex ``foo: Var`` or ``bar: Slot`` or (presumably) ``baz: list``
     elif anno_origin is None:
         if resolved_field_type is Var:
             return {InterfaceAnnotationFlavor.VARIABLE}, None
@@ -370,12 +370,12 @@ def _classify_interface_field_flavor(  # noqa: PLR0911
                 + 'parameter!')
 
         else:
-            return None
+            return {InterfaceAnnotationFlavor.DATA}, None
 
-    # So there was a parameter passed, but the generic wasn't one of ours.
-    # Therefore, we can't do anything with it.
+    # There was a non-generic parameter passed. Therefore, it can only be
+    # one thing: template data.
     else:
-        return None
+        return {InterfaceAnnotationFlavor.DATA}, None
 
 
 @dataclass_transform(field_specifiers=(param, field, Field))
@@ -503,6 +503,7 @@ def make_template_definition[T: type](
     dynamic_slots = {}
     vars_ = {}
     content = {}
+    data = {}
     prerenderers = {}
     # Note that this ignores initvars, which is what we want
     for template_field in fields(cls):
@@ -531,8 +532,10 @@ def make_template_definition[T: type](
                     dest_lookup = dynamic_slots
                 else:
                     dest_lookup = slots
-            else:
+            elif InterfaceAnnotationFlavor.CONTENT in field_flavors:
                 dest_lookup = content
+            else:
+                dest_lookup = data
 
             dest_lookup[template_field.name] = wrapped_type
             prerenderers[template_field.name] = template_field.metadata.get(
@@ -540,6 +543,7 @@ def make_template_definition[T: type](
 
     cls._templatey_signature = TemplateSignature.new(
         template_cls=cls,
+        data=data,
         slots=slots,
         dynamic_class_slot_names=set(dynamic_slots),
         vars_=vars_,

@@ -312,6 +312,7 @@ class RenderEnvironment:
         slot_names = template_signature.slot_names
         dynamic_class_slot_names = template_signature.dynamic_class_slot_names
         content_names = template_signature.content_names
+        data_names = template_signature.data_names
 
         if strict_mode:
             variables_mismatch = (
@@ -321,6 +322,8 @@ class RenderEnvironment:
                 ^ (slot_names | dynamic_class_slot_names))
             content_mismatch = (
                 parsed_template_resource.content_names ^ content_names)
+            data_mismatch = (
+                parsed_template_resource.data_names ^ data_names)
 
         else:
             variables_mismatch = (
@@ -330,12 +333,20 @@ class RenderEnvironment:
                 - (slot_names | dynamic_class_slot_names))
             content_mismatch = (
                 parsed_template_resource.content_names - content_names)
+            data_mismatch = (
+                parsed_template_resource.data_names - data_names)
 
-        if variables_mismatch or slot_mismatch or content_mismatch:
+        if (
+            variables_mismatch
+            or slot_mismatch
+            or content_mismatch
+            or data_mismatch
+        ):
             raise MismatchedTemplateSignature(
                 'Template interface variables, content, or slots did not '
                 + 'match the template text!', template_class,
-                variables_mismatch, slot_mismatch, content_mismatch)
+                variables_mismatch, slot_mismatch, content_mismatch,
+                data_mismatch)
 
         return True
 

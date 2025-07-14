@@ -534,6 +534,22 @@ class TestMakeTemplateDefinition:
         assert len(signature.var_names) == 1
         assert 'bar' in signature.var_names
 
+    def test_supports_data(self):
+        """Non-param dataclass fields must be detected as template data.
+        """
+        class FakeTemplate:
+            foo: str
+
+        retval = cast(type[TemplateIntersectable], make_template_definition(
+            FakeTemplate,
+            dataclass_kwargs={},
+            template_resource_locator=object(),
+            template_config=fake_template_config))
+        signature = retval._templatey_signature
+
+        assert len(signature.data_names) == 1
+        assert 'foo' in signature.data_names
+
     def test_content_extraction(self):
         """Fields declared with Content[...] must be correctly detected
         and stored on the class.
@@ -565,20 +581,6 @@ class TestMakeTemplateDefinition:
             template_resource_locator=object(),
             template_config=fake_template_config)
         assert is_dataclass(retval)
-
-    def test_requires_interface_typehint(self):
-        """Template type definitions must only include Vars, Contents,
-        and Slots, and must error if anything else is passed.
-        """
-        with pytest.raises(TypeError):
-            class FakeTemplate:
-                foo: str
-
-            make_template_definition(
-                FakeTemplate,
-                dataclass_kwargs={},
-                template_resource_locator=object(),
-                template_config=fake_template_config)
 
     def test_supports_passthrough(self):
         """Dataclass kwargs must be forwarded to the dataclass
