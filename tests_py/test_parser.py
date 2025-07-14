@@ -5,6 +5,7 @@ from templatey.parser import InterpolatedSlot
 from templatey.parser import InterpolatedVariable
 from templatey.parser import InterpolationConfig
 from templatey.parser import NestedContentReference
+from templatey.parser import NestedDataReference
 from templatey.parser import NestedVariableReference
 from templatey.parser import parse
 
@@ -235,6 +236,26 @@ class TestParse:
         assert not parsed.slot_names
         assert not parsed.content_names
         assert parsed.variable_names == frozenset({'baz'})
+        assert parsed.function_names == frozenset({'bar'})
+        assert 'bar' in parsed.function_calls
+
+    def test_curlybrace_with_function_params_data_ref(self):
+        template = 'foo {@bar(data.baz)}'
+        parsed = parse(template, NamedInterpolator.CURLY_BRACES)
+
+        assert len(parsed.parts) == 2
+        assert parsed.parts[0] == 'foo '
+        assert InterpolatedFunctionCall(
+            call_args_exp=None,
+            call_kwargs_exp=None,
+            part_index=1,
+            name='bar',
+            call_args=[NestedDataReference(name='baz')],
+            call_kwargs={})._matches(parsed.parts[1])
+        assert not parsed.slot_names
+        assert not parsed.content_names
+        assert not parsed.variable_names
+        assert parsed.data_names == frozenset({'baz'})
         assert parsed.function_names == frozenset({'bar'})
         assert 'bar' in parsed.function_calls
 

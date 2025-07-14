@@ -47,6 +47,7 @@ class ParsedTemplateResource:
     content_names: frozenset[str]
     slot_names: frozenset[str]
     function_names: frozenset[str]
+    data_names: frozenset[str]
     # Separate this out from function_names so that we can put compare=False
     # while still preserving comparability between instances. It's not clear if
     # this is useful, but the memory footprint should be low
@@ -153,9 +154,15 @@ class NestedVariableReference:
     name: str
 
 
+@dataclass(slots=True, frozen=True)
+class NestedDataReference:
+    name: str
+
+
 _VALID_NESTED_REFS = {
     'content': NestedContentReference,
-    'var': NestedVariableReference}
+    'var': NestedVariableReference,
+    'data': NestedDataReference,}
 
 
 def parse(
@@ -174,6 +181,7 @@ def parse(
     content_names = set()
     slot_names = set()
     variable_names = set()
+    data_names = set()
     functions = defaultdict(list)
     for part in parts:
         if isinstance(part, InterpolatedContent):
@@ -186,7 +194,7 @@ def parse(
                 raise DuplicateSlotName(part.name)
 
             for maybe_reference in part.params.values():
-                nested_content_refs, nested_var_refs = _extract_nested_refs(
+                nested_content_refs, nested_var_refs, _ = _extract_nested_refs(
                     maybe_reference)
                 content_names.update(ref.name for ref in nested_content_refs)
                 variable_names.update(ref.name for ref in nested_var_refs)
@@ -200,10 +208,14 @@ def parse(
                 (starargs for starargs in (part.call_args_exp,)),
                 (starkwargs for starkwargs in (part.call_kwargs_exp,))
             ):
-                nested_content_refs, nested_var_refs = _extract_nested_refs(
-                    maybe_reference)
+                (
+                    nested_content_refs,
+                    nested_var_refs,
+                    nested_data_refs) = _extract_nested_refs(
+                        maybe_reference)
                 content_names.update(ref.name for ref in nested_content_refs)
                 variable_names.update(ref.name for ref in nested_var_refs)
+                data_names.update(ref.name for ref in nested_data_refs)
 
             functions[part.name].append(part)
 
@@ -215,19 +227,25 @@ def parse(
         function_names=frozenset(functions),
         function_calls={
             name: tuple(calls) for name, calls in functions.items()},
+        data_names=frozenset(data_names),
         slots={
             maybe_slot.name: maybe_slot
             for maybe_slot in parts
             if isinstance(maybe_slot, InterpolatedSlot)})
 
 
-def _extract_nested_refs(value) -> tuple[
-        set[NestedContentReference], set[NestedVariableReference]]:
+def _extract_nested_refs(
+        value
+        ) -> tuple[
+            set[NestedContentReference],
+            set[NestedVariableReference],
+            set[NestedDataReference]]:
     """Call this to recursively extract all of the content and variable
     references contained within an environment function call.
     """
     content_refs = set()
     var_refs = set()
+    data_refs = set()
 
     # Note that order here is important! Mappings are always collections!
     # Strings are always collections, too!
@@ -246,13 +264,17 @@ def _extract_nested_refs(value) -> tuple[
         elif isinstance(value, NestedVariableReference):
             var_refs.add(value)
 
-    for nested_val in nested_values:
-        nested_content_refs, nested_var_refs = _extract_nested_refs(
-            nested_val)
-        content_refs.update(nested_content_refs)
-        nested_var_refs.update(nested_var_refs)
+        elif isinstance(value, NestedDataReference):
+            data_refs.add(value)
 
-    return content_refs, var_refs
+    for nested_val in nested_values:
+        nested_content_refs, nested_var_refs, nested_data_refs = \
+            _extract_nested_refs(nested_val)
+        content_refs.update(nested_content_refs)
+        var_refs.update(nested_var_refs)
+        data_refs.update(nested_data_refs)
+
+    return content_refs, var_refs, data_refs
 
 
 def _wrap_formatter_parse(

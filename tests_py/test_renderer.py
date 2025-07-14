@@ -75,6 +75,7 @@ class TestRenderDriver:
                     slot_names=frozenset(),
                     slots={},
                     function_names=frozenset(),
+                    data_names=frozenset(),
                     function_calls={}))
             return
             yield
@@ -128,6 +129,7 @@ class TestRenderDriver:
                     slot_names=frozenset(),
                     slots={},
                     function_names=frozenset({'fakefunc'}),
+                    data_names=frozenset(),
                     function_calls={'fakefunc': (fake_interpolated_call,)}))
             render_context.function_precall[fake_cache_key] = (
                 FuncExecutionResult(
@@ -184,6 +186,7 @@ class TestRenderDriver:
                     content_names=frozenset(),
                     slot_names=frozenset(),
                     slots={},
+                    data_names=frozenset(),
                     function_names=frozenset(),
                     function_calls={}))
             return
@@ -236,6 +239,7 @@ class TestRenderContext:
                 content_names=frozenset(),
                 slot_names=frozenset(),
                 slots={},
+                data_names=frozenset(),
                 function_names=frozenset(),
                 function_calls={})
 
@@ -283,6 +287,7 @@ class TestRenderContext:
                     content_names=frozenset(),
                     slot_names=frozenset(),
                     slots={},
+                    data_names=frozenset(),
                     function_names=frozenset({'fakefunc'}),
                     function_calls={'fakefunc': (fake_interpolated_call,)})
 
@@ -337,6 +342,7 @@ class TestRenderContext:
                     content_names=frozenset(),
                     slot_names=frozenset(),
                     slots={},
+                    data_names=frozenset(),
                     function_names=frozenset({'fakefunc'}),
                     function_calls={'fakefunc': (fake_interpolated_call,)})
 

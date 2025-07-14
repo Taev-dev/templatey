@@ -282,6 +282,7 @@ class TestRenderEnvironment:
                 content_names=frozenset(),
                 slot_names=frozenset(),
                 slots={},
+                data_names=frozenset(),
                 function_names=frozenset(),
                 function_calls={}))
 
@@ -322,6 +323,7 @@ class TestRenderEnvironment:
                 content_names=frozenset(),
                 slot_names=frozenset(),
                 slots={},
+                data_names=frozenset(),
                 function_names=frozenset({'href'}),
                 function_calls={}))
 
@@ -350,6 +352,7 @@ class TestRenderEnvironment:
                     content_names=frozenset(),
                     slot_names=frozenset(),
                     slots={},
+                    data_names=frozenset(),
                     function_names=frozenset({'href'}),
                     function_calls={'href': (InterpolatedFunctionCall(
                         call_args_exp=None,
@@ -385,6 +388,7 @@ class TestRenderEnvironment:
                     content_names=frozenset(),
                     slot_names=frozenset(),
                     slots={},
+                    data_names=frozenset(),
                     function_names=frozenset({'href'}),
                     function_calls={'href': (InterpolatedFunctionCall(
                         call_args_exp=None,
@@ -427,6 +431,7 @@ class TestRenderEnvironment:
                 content_names=frozenset(),
                 slot_names=frozenset({'bar'}),
                 slots={},
+                data_names=frozenset(),
                 function_names=frozenset(),
                 function_calls={}),
             strict_mode=True)
@@ -461,6 +466,7 @@ class TestRenderEnvironment:
                     content_names=frozenset({'foo'}),
                     slot_names=frozenset(),
                     slots={},
+                    data_names=frozenset(),
                     function_names=frozenset(),
                     function_calls={}),
                 strict_mode=True)
@@ -488,6 +494,7 @@ class TestRenderEnvironment:
                     content_names=frozenset(),
                     slot_names=frozenset(),
                     slots={},
+                    data_names=frozenset(),
                     function_names=frozenset(),
                     function_calls={}),
                 strict_mode=True)
@@ -514,6 +521,7 @@ class TestRenderEnvironment:
                 content_names=frozenset(),
                 slot_names=frozenset(),
                 slots={},
+                data_names=frozenset(),
                 function_names=frozenset(),
                 function_calls={}),
             strict_mode=False)
