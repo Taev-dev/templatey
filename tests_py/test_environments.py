@@ -533,7 +533,7 @@ class TestRenderEnvironment:
             result_key=object(),
             provenance=Provenance())
 
-        result = render_env.execute_env_function_sync(request)
+        result = render_env._execute_env_function_sync(request)
         assert isinstance(result, FuncExecutionResult)
         assert result.retval == ('foo', 'bar', 'baz')
 
@@ -551,6 +551,6 @@ class TestRenderEnvironment:
             result_key=object(),
             provenance=Provenance())
 
-        result = await render_env.execute_env_function_async(request)
+        result = await render_env._execute_env_function_async(request)
         assert isinstance(result, FuncExecutionResult)
         assert result.retval == ('foo', 'bar', 'baz')

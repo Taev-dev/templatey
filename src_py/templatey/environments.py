@@ -10,8 +10,14 @@ from typing import Protocol
 from typing import cast
 from typing import runtime_checkable
 
+try:
+    from anyio import create_task_group
+except ImportError:
+    pass
+
 from templatey._bootstrapping import PARSED_EMPTY_TEMPLATE
 from templatey._bootstrapping import EmptyTemplate
+from templatey._types import TemplateClass
 from templatey._types import TemplateIntersectable
 from templatey._types import TemplateParamsInstance
 from templatey.exceptions import MismatchedRenderColor
@@ -22,6 +28,7 @@ from templatey.parser import ParsedTemplateResource
 from templatey.parser import parse
 from templatey.renderer import FuncExecutionRequest
 from templatey.renderer import FuncExecutionResult
+from templatey.renderer import RenderEnvRequest
 from templatey.renderer import render_driver
 from templatey.templates import InjectedValue
 
@@ -346,14 +353,14 @@ class RenderEnvironment:
 
             for to_execute in env_request.to_execute:
                 env_request.results_executed[to_execute.result_key] = (
-                    self.execute_env_function_sync(to_execute))
+                    self._execute_env_function_sync(to_execute))
 
         if error_collector:
             raise ExceptionGroup('Failed to render template', error_collector)
 
         return ''.join(output)
 
-    def execute_env_function_sync(
+    def _execute_env_function_sync(
             self,
             request: FuncExecutionRequest
             ) -> FuncExecutionResult:
@@ -382,21 +389,52 @@ class RenderEnvironment:
         for env_request in render_driver(
             template_instance, output, error_collector
         ):
-            # TODO: ... make all of this parallel! duh doy!
-            for to_load in env_request.to_load:
-                env_request.results_loaded[to_load] = await self.load_async(
-                    to_load)
+            try:
+                # Ignoring the possibly unbound, because we're catching it
+                # below
+                async with create_task_group() as task_group:  # type: ignore
+                    for to_load in env_request.to_load:
+                        task_group.start_soon(
+                            self._wrap_load_async, env_request, to_load)
 
-            for to_execute in env_request.to_execute:
-                env_request.results_executed[to_execute.result_key] = (
-                    await self.execute_env_function_async(to_execute))
+                    for to_execute in env_request.to_execute:
+                        task_group.start_soon(
+                            self._wrap_execute_async, env_request, to_execute)
+
+            except NameError as exc:
+                exc.add_note(
+                    'Missing async deps. Please re-install templatey with '
+                    + 'async optionals by replacing ``templatey`` with '
+                    + ' ``templatey[async]`` in pyproject.toml, pip, etc.')
+                raise exc
 
         if error_collector:
             raise ExceptionGroup('Failed to render template', error_collector)
 
         return ''.join(output)
 
-    async def execute_env_function_async(
+    async def _wrap_load_async(
+            self,
+            env_request: RenderEnvRequest,
+            to_load: TemplateClass):
+        """This wraps the load_async call so that we don't need to
+        access its results from ``render_async``, allowing requests to
+        be done in parallel.
+        """
+        env_request.results_loaded[to_load] = await self.load_async(to_load)
+
+    async def _wrap_execute_async(
+            self,
+            env_request: RenderEnvRequest,
+            to_execute: FuncExecutionRequest):
+        """This wraps the execute_async call so that we don't need to
+        access its results from ``render_async``, allowing requests to
+        be done in parallel.
+        """
+        env_request.results_executed[to_execute.result_key] = (
+            await self._execute_env_function_async(to_execute))
+
+    async def _execute_env_function_async(
             self,
             request: FuncExecutionRequest
             ) -> FuncExecutionResult:

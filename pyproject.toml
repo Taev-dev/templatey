@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-async_prebaked = [
+async = [
     "anyio >= 4.6.2",
 ]
 
