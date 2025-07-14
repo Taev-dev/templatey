@@ -18,7 +18,6 @@ from typing import NamedTuple
 from typing import cast
 from typing import overload
 
-from templatey._annotations import InterfaceAnnotationFlavor
 from templatey._bootstrapping import EMPTY_TEMPLATE_INSTANCE
 from templatey._bootstrapping import EMPTY_TEMPLATE_XABLE
 from templatey._provenance import Provenance
@@ -26,6 +25,7 @@ from templatey._provenance import ProvenanceNode
 from templatey._signature import TemplateSignature
 from templatey._slot_tree import SlotTreeNode
 from templatey._slot_tree import extract_dynamic_class_slot_types
+from templatey._types import InterfaceAnnotationFlavor
 from templatey._types import TemplateClass
 from templatey._types import TemplateIntersectable
 from templatey._types import TemplateParamsInstance
