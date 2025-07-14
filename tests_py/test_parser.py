@@ -275,3 +275,16 @@ class TestParse:
         assert parsed.variable_names == frozenset({'baz'})
         assert parsed.function_names == frozenset({'bar'})
         assert 'bar' in parsed.function_calls
+
+    def test_curlybrace_with_comment(self):
+        template = 'foo {# some comment} bar'
+        parsed = parse(template, NamedInterpolator.CURLY_BRACES)
+
+        assert len(parsed.parts) == 2
+        assert parsed.parts[0] == 'foo '
+        assert parsed.parts[1] == ' bar'
+        assert not parsed.variable_names
+        assert not parsed.content_names
+        assert not parsed.slot_names
+        assert not parsed.function_names
+        assert not parsed.function_calls
