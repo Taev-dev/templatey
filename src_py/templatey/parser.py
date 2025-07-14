@@ -27,6 +27,7 @@ _SLOT_MATCHER = re.compile(r'^\s*slot\.([A-z_][A-z0-9_]*)\s*$')
 _CONTENT_MATCHER = re.compile(r'^\s*content\.([A-z_][A-z0-9_]*)\s*$')
 _VAR_MATCHER = re.compile(r'^\s*var\.([A-z_][A-z0-9_]*)\s*$')
 _FUNC_MATCHER = re.compile(r'^\s*@([A-z_][A-z0-9_]*)\(([^\)]*)\)\s*$')
+_COMMENT_MATCHER = re.compile(r'^\s*#.*$')
 logger = logging.getLogger(__name__)
 
 
@@ -306,8 +307,10 @@ def _wrap_formatter_parse(
         if field_name is None:
             continue
         else:
-            yield _coerce_interpolation(
+            coerced_interpolation = _coerce_interpolation(
                 field_name, format_spec, conversion, part_counter)
+            if coerced_interpolation is not None:
+                yield coerced_interpolation
 
 
 @dataclass(frozen=True, slots=True)
@@ -435,6 +438,9 @@ def _coerce_interpolation(field_name, format_spec, conversion, part_counter):
         else:
             full_interpolation_def = field_name
 
+        if _COMMENT_MATCHER.match(full_interpolation_def) is not None:
+            return None
+
         if (match := _FUNC_MATCHER.match(full_interpolation_def)) is not None:
             args, starargs, kwargs, starkwargs = _extract_call_signature(
                 match.group(2))
@@ -478,7 +484,7 @@ def _coerce_interpolation(field_name, format_spec, conversion, part_counter):
 
         raise InvalidTemplateInterpolation(
             'Unknown target for templatey interpolation (must be var, slot, '
-            + 'env function, or content)')
+            + 'env function, content, or comment)')
 
     except InvalidTemplateInterpolation as exc:
         exc.add_note(f'{field_name=}, {format_spec=}, {conversion=}')
