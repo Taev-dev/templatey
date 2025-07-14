@@ -37,10 +37,10 @@ from templatey.parser import InterpolatedFunctionCall
 from templatey.parser import InterpolatedSlot
 from templatey.parser import InterpolatedVariable
 from templatey.parser import InterpolationConfig
-from templatey.parser import NestedContentReference
-from templatey.parser import NestedDataReference
-from templatey.parser import NestedVariableReference
 from templatey.parser import ParsedTemplateResource
+from templatey.parser import TemplateInstanceContentRef
+from templatey.parser import TemplateInstanceDataRef
+from templatey.parser import TemplateInstanceVariableRef
 from templatey.templates import ComplexContent
 from templatey.templates import InjectedValue
 from templatey.templates import TemplateConfig
@@ -866,7 +866,7 @@ def _recursively_coerce_func_execution_params[T: object](
         ) -> tuple[T]: ...
 @overload
 def _recursively_coerce_func_execution_params(
-        param_value: NestedContentReference | NestedVariableReference,
+        param_value: TemplateInstanceContentRef | TemplateInstanceVariableRef,
         *,
         template_instance: TemplateParamsInstance,
         unescaped_vars: _ParamLookup,
@@ -961,7 +961,7 @@ def _(
 # Note: I think there might be a bug in pyright re: singledispatch vs overloads
 @_recursively_coerce_func_execution_params.register  # type: ignore
 def _(
-        param_value: NestedContentReference,
+        param_value: TemplateInstanceContentRef,
         *,
         template_instance: TemplateParamsInstance,
         unescaped_vars: _ParamLookup,
@@ -978,7 +978,7 @@ def _(
 # Note: I think there might be a bug in pyright re: singledispatch vs overloads
 @_recursively_coerce_func_execution_params.register  # type: ignore
 def _(
-        param_value: NestedVariableReference,
+        param_value: TemplateInstanceVariableRef,
         *,
         template_instance: TemplateParamsInstance,
         unescaped_vars: _ParamLookup,
@@ -995,7 +995,7 @@ def _(
 # Note: I think there might be a bug in pyright re: singledispatch vs overloads
 @_recursively_coerce_func_execution_params.register  # type: ignore
 def _(
-        param_value: NestedDataReference,
+        param_value: TemplateInstanceDataRef,
         *,
         template_instance: TemplateParamsInstance,
         unescaped_vars: _ParamLookup,

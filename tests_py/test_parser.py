@@ -4,9 +4,9 @@ from templatey.parser import InterpolatedFunctionCall
 from templatey.parser import InterpolatedSlot
 from templatey.parser import InterpolatedVariable
 from templatey.parser import InterpolationConfig
-from templatey.parser import NestedContentReference
-from templatey.parser import NestedDataReference
-from templatey.parser import NestedVariableReference
+from templatey.parser import TemplateInstanceContentRef
+from templatey.parser import TemplateInstanceDataRef
+from templatey.parser import TemplateInstanceVariableRef
 from templatey.parser import parse
 
 
@@ -152,7 +152,7 @@ class TestParse:
         assert parsed.parts[0] == 'foo '
         assert parsed.parts[1] == InterpolatedSlot(
             part_index=1, name='bar',
-            params={'baz': NestedContentReference(name='baz')},
+            params={'baz': TemplateInstanceContentRef(name='baz')},
             config=InterpolationConfig())
         assert parsed.slot_names == frozenset({'bar'})
         assert parsed.content_names == frozenset({'baz'})
@@ -231,7 +231,7 @@ class TestParse:
             call_kwargs_exp=None,
             part_index=1,
             name='bar',
-            call_args=[NestedVariableReference(name='baz')],
+            call_args=[TemplateInstanceVariableRef(name='baz')],
             call_kwargs={})._matches(parsed.parts[1])
         assert not parsed.slot_names
         assert not parsed.content_names
@@ -250,7 +250,7 @@ class TestParse:
             call_kwargs_exp=None,
             part_index=1,
             name='bar',
-            call_args=[NestedDataReference(name='baz')],
+            call_args=[TemplateInstanceDataRef(name='baz')],
             call_kwargs={})._matches(parsed.parts[1])
         assert not parsed.slot_names
         assert not parsed.content_names
@@ -266,7 +266,7 @@ class TestParse:
         assert len(parsed.parts) == 2
         assert parsed.parts[0] == 'foo '
         assert InterpolatedFunctionCall(
-            call_args_exp=NestedVariableReference(name='baz'),
+            call_args_exp=TemplateInstanceVariableRef(name='baz'),
             call_kwargs_exp=None,
             part_index=1,
             name='bar',
@@ -286,7 +286,7 @@ class TestParse:
         assert parsed.parts[0] == 'foo '
         assert InterpolatedFunctionCall(
             call_args_exp=None,
-            call_kwargs_exp=NestedVariableReference(name='baz'),
+            call_kwargs_exp=TemplateInstanceVariableRef(name='baz'),
             part_index=1,
             name='bar',
             call_args=[],

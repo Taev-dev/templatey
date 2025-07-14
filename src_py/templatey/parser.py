@@ -145,24 +145,24 @@ class InterpolatedFunctionCall:
 
 
 @dataclass(slots=True, frozen=True)
-class NestedContentReference:
+class TemplateInstanceContentRef:
     name: str
 
 
 @dataclass(slots=True, frozen=True)
-class NestedVariableReference:
+class TemplateInstanceVariableRef:
     name: str
 
 
 @dataclass(slots=True, frozen=True)
-class NestedDataReference:
+class TemplateInstanceDataRef:
     name: str
 
 
 _VALID_NESTED_REFS = {
-    'content': NestedContentReference,
-    'var': NestedVariableReference,
-    'data': NestedDataReference,}
+    'content': TemplateInstanceContentRef,
+    'var': TemplateInstanceVariableRef,
+    'data': TemplateInstanceDataRef,}
 
 
 def parse(
@@ -237,9 +237,9 @@ def parse(
 def _extract_nested_refs(
         value
         ) -> tuple[
-            set[NestedContentReference],
-            set[NestedVariableReference],
-            set[NestedDataReference]]:
+            set[TemplateInstanceContentRef],
+            set[TemplateInstanceVariableRef],
+            set[TemplateInstanceDataRef]]:
     """Call this to recursively extract all of the content and variable
     references contained within an environment function call.
     """
@@ -258,13 +258,13 @@ def _extract_nested_refs(
     else:
         nested_values = ()
 
-        if isinstance(value, NestedContentReference):
+        if isinstance(value, TemplateInstanceContentRef):
             content_refs.add(value)
 
-        elif isinstance(value, NestedVariableReference):
+        elif isinstance(value, TemplateInstanceVariableRef):
             var_refs.add(value)
 
-        elif isinstance(value, NestedDataReference):
+        elif isinstance(value, TemplateInstanceDataRef):
             data_refs.add(value)
 
     for nested_val in nested_values:
