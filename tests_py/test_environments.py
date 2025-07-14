@@ -233,6 +233,17 @@ class TestRenderEnvironment:
         functions and cache whatever result is given by the loader. It
         must also, of course, call into parsing.
         """
+        # Doesn't need to be right, just needs to be a dataclass instance
+        mock_parse.return_value = ParsedTemplateResource(
+            parts=(),
+            variable_names=frozenset(),
+            content_names=frozenset(),
+            slot_names=frozenset(),
+            function_names=frozenset(),
+            data_names=frozenset(),
+            function_calls={},
+            slots={})
+
         @template(fake_template_config, 'fake')
         class FakeTemplate:
             foo: Var[str]
@@ -251,7 +262,9 @@ class TestRenderEnvironment:
             template_text='foobar',
             override_validation_strictness=None)
 
-        assert result is mock_parse.return_value
+        # Note that it won't be the actual object, because we created a copy
+        # while applying modifiers
+        assert result == mock_parse.return_value
         assert mock_parse.call_count == 1
         assert FakeTemplate in render_env._parsed_template_cache
         assert render_env._validate_env_functions.call_count == 1

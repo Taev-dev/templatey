@@ -10,12 +10,16 @@ from collections.abc import Collection
 from collections.abc import Generator
 from collections.abc import Iterator
 from collections.abc import Mapping
+from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import fields
 from functools import singledispatch
+from typing import Annotated
 from typing import Any
 from typing import cast
+
+from docnote import ClcNote
 
 from templatey.exceptions import DuplicateSlotName
 from templatey.exceptions import InvalidTemplateInterpolation
@@ -116,7 +120,7 @@ class InterpolatedVariable:
 class InterpolatedFunctionCall:
     part_index: int
     name: str
-    call_args: list[object] = field(compare=False)
+    call_args: Sequence[object] = field(compare=False)
     call_args_exp: object | None = field(compare=False)
     call_kwargs: dict[str, object] = field(compare=False)
     call_kwargs_exp: object | None = field(compare=False)
@@ -146,17 +150,35 @@ class InterpolatedFunctionCall:
 
 @dataclass(slots=True, frozen=True)
 class TemplateInstanceContentRef:
-    name: str
+    """Used to indicate that an environment function or segment
+    modification needs to reference a content parameter on the current
+    template instance being rendered.
+    """
+    name: Annotated[
+        str,
+        ClcNote('The name of the content parameter')]
 
 
 @dataclass(slots=True, frozen=True)
 class TemplateInstanceVariableRef:
-    name: str
+    """Used to indicate that an environment function or segment
+    modification needs to reference a variable parameter on the current
+    template instance being rendered.
+    """
+    name: Annotated[
+        str,
+        ClcNote('The name of the variable parameter')]
 
 
 @dataclass(slots=True, frozen=True)
 class TemplateInstanceDataRef:
-    name: str
+    """Used to indicate that an environment function (including one
+    injected via segment modification) needs to reference a template
+    data attribute on the current template instance being rendered.
+    """
+    name: Annotated[
+        str,
+        ClcNote('The name of the data attribute (the dataclass field name)')]
 
 
 _VALID_NESTED_REFS = {

@@ -113,7 +113,8 @@ class TestMakeTemplateDefinition:
             Foo,
             dataclass_kwargs={},
             template_resource_locator=object(),
-            template_config=fake_template_config)
+            template_config=fake_template_config,
+            segment_modifiers=[])
         assert is_template_class(retval)
 
     def test_closure_resolution_works(self):
@@ -134,7 +135,8 @@ class TestMakeTemplateDefinition:
             Bar,
             dataclass_kwargs={},
             template_resource_locator=object(),
-            template_config=fake_template_config)
+            template_config=fake_template_config,
+            segment_modifiers=[])
         assert is_template_class(retval)
 
     def test_forward_ref_works(self):
@@ -152,7 +154,8 @@ class TestMakeTemplateDefinition:
             Bar,
             dataclass_kwargs={},
             template_resource_locator=object(),
-            template_config=fake_template_config))
+            template_config=fake_template_config,
+            segment_modifiers=[]))
         assert is_template_class(retval)
 
         assert len(retval._templatey_signature._pending_ref_lookup) == 1
@@ -192,7 +195,8 @@ class TestMakeTemplateDefinition:
             Bar,
             dataclass_kwargs={},
             template_resource_locator=object(),
-            template_config=fake_template_config))
+            template_config=fake_template_config,
+            segment_modifiers=[]))
         assert is_template_class(retval)
 
         assert len(retval._templatey_signature._pending_ref_lookup) == 1
@@ -260,7 +264,8 @@ class TestMakeTemplateDefinition:
             Baz,
             dataclass_kwargs={},
             template_resource_locator=object(),
-            template_config=fake_template_config))
+            template_config=fake_template_config,
+            segment_modifiers=[]))
         assert is_template_class(retval)
 
         assert len(retval._templatey_signature._pending_ref_lookup) == 1
@@ -295,7 +300,8 @@ class TestMakeTemplateDefinition:
             Foo,
             dataclass_kwargs={},
             template_resource_locator=object(),
-            template_config=fake_template_config))
+            template_config=fake_template_config,
+            segment_modifiers=[]))
         assert is_template_class(retval)
         assert len(retval._templatey_signature._pending_ref_lookup) == 0
         forward_ref_registry = PENDING_FORWARD_REFS.get()
@@ -318,7 +324,8 @@ class TestMakeTemplateDefinition:
             Bar,
             dataclass_kwargs={},
             template_resource_locator=object(),
-            template_config=fake_template_config))
+            template_config=fake_template_config,
+            segment_modifiers=[]))
         assert is_template_class(retval)
 
         assert len(retval._templatey_signature._pending_ref_lookup) == 1
@@ -357,7 +364,8 @@ class TestMakeTemplateDefinition:
             FakeTemplate,
             dataclass_kwargs={},
             template_resource_locator='my_special_locator',
-            template_config=fake_template_config))
+            template_config=fake_template_config,
+            segment_modifiers=[]))
         assert retval._templatey_resource_locator == 'my_special_locator'
         assert retval._templatey_config is fake_template_config
 
@@ -378,7 +386,8 @@ class TestMakeTemplateDefinition:
             FakeTemplate,
             dataclass_kwargs={},
             template_resource_locator=object(),
-            template_config=fake_template_config))
+            template_config=fake_template_config,
+            segment_modifiers=[]))
         signature = retval._templatey_signature
 
         assert len(signature.slot_names) == 1
@@ -405,7 +414,8 @@ class TestMakeTemplateDefinition:
             FakeTemplate,
             dataclass_kwargs={},
             template_resource_locator=object(),
-            template_config=fake_template_config))
+            template_config=fake_template_config,
+            segment_modifiers=[]))
         signature = retval._templatey_signature
 
         assert len(signature.slot_names) == 1
@@ -435,7 +445,8 @@ class TestMakeTemplateDefinition:
             FakeTemplate,
             dataclass_kwargs={},
             template_resource_locator=object(),
-            template_config=fake_template_config))
+            template_config=fake_template_config,
+            segment_modifiers=[]))
         signature = retval._templatey_signature
 
         assert len(signature.slot_names) == 2
@@ -528,7 +539,8 @@ class TestMakeTemplateDefinition:
             FakeTemplate,
             dataclass_kwargs={},
             template_resource_locator=object(),
-            template_config=fake_template_config))
+            template_config=fake_template_config,
+            segment_modifiers=[]))
         signature = retval._templatey_signature
 
         assert len(signature.var_names) == 1
@@ -544,7 +556,8 @@ class TestMakeTemplateDefinition:
             FakeTemplate,
             dataclass_kwargs={},
             template_resource_locator=object(),
-            template_config=fake_template_config))
+            template_config=fake_template_config,
+            segment_modifiers=[]))
         signature = retval._templatey_signature
 
         assert len(signature.data_names) == 1
@@ -562,7 +575,8 @@ class TestMakeTemplateDefinition:
             FakeTemplate,
             dataclass_kwargs={},
             template_resource_locator=object(),
-            template_config=fake_template_config))
+            template_config=fake_template_config,
+            segment_modifiers=[]))
         signature = retval._templatey_signature
 
         assert len(signature.content_names) == 1
@@ -579,7 +593,8 @@ class TestMakeTemplateDefinition:
             FakeTemplate,
             dataclass_kwargs={},
             template_resource_locator=object(),
-            template_config=fake_template_config)
+            template_config=fake_template_config,
+            segment_modifiers=[])
         assert is_dataclass(retval)
 
     def test_supports_passthrough(self):
@@ -593,7 +608,8 @@ class TestMakeTemplateDefinition:
             FakeTemplate,
             dataclass_kwargs={'frozen': True, 'slots': True},
             template_resource_locator=object(),
-            template_config=fake_template_config)
+            template_config=fake_template_config,
+            segment_modifiers=[])
 
         instance = template_cls(foo='foo')  # type: ignore
         with pytest.raises(FrozenInstanceError):
@@ -620,7 +636,8 @@ class TestMakeTemplateDefinition:
             FakeTemplate,
             dataclass_kwargs={},
             template_resource_locator=object(),
-            template_config=fake_template_config))
+            template_config=fake_template_config,
+            segment_modifiers=[]))
         signature = retval._templatey_signature
 
         assert len(signature.slot_names) == 1
