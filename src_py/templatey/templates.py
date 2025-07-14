@@ -27,7 +27,6 @@ from typing import overload
 
 from docnote import ClcNote
 
-from templatey._annotations import InterfaceAnnotationFlavor
 from templatey._forwardrefs import ForwardRefGeneratingNamespaceLookup
 from templatey._forwardrefs import ForwardRefLookupKey
 from templatey._forwardrefs import extract_frame_scope_id
@@ -35,6 +34,7 @@ from templatey._forwardrefs import resolve_forward_references
 from templatey._signature import TemplateSignature
 from templatey._types import Content
 from templatey._types import DynamicClassSlot
+from templatey._types import InterfaceAnnotationFlavor
 from templatey._types import Slot
 from templatey._types import Var
 from templatey.interpolators import NamedInterpolator

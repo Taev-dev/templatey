@@ -3,6 +3,8 @@ from __future__ import annotations
 import typing
 from collections.abc import Sequence
 from contextvars import ContextVar
+from dataclasses import dataclass
+from enum import Enum
 from random import Random
 from types import EllipsisType
 from typing import Annotated
@@ -13,9 +15,6 @@ from typing import Protocol
 from docnote import ClcNote
 from typing_extensions import TypeIs
 
-from templatey._annotations import InterfaceAnnotation
-from templatey._annotations import InterfaceAnnotationFlavor
-
 if typing.TYPE_CHECKING:
     from _typeshed import DataclassInstance
 
@@ -23,6 +22,18 @@ if typing.TYPE_CHECKING:
     from templatey.templates import TemplateSignature
 else:
     DataclassInstance = object
+
+
+class InterfaceAnnotationFlavor(Enum):
+    SLOT = 'slot'
+    VARIABLE = 'var'
+    CONTENT = 'content'
+    DYNAMIC = 'dynamic'
+
+
+@dataclass(frozen=True)
+class InterfaceAnnotation:
+    flavor: InterfaceAnnotationFlavor
 
 
 # Technically this should be an intersection type with both the
