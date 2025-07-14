@@ -282,6 +282,7 @@ class TestRenderEnvironment:
                 content_names=frozenset(),
                 slot_names=frozenset(),
                 slots={},
+                data_names=frozenset(),
                 function_names=frozenset(),
                 function_calls={}))
 
@@ -322,6 +323,7 @@ class TestRenderEnvironment:
                 content_names=frozenset(),
                 slot_names=frozenset(),
                 slots={},
+                data_names=frozenset(),
                 function_names=frozenset({'href'}),
                 function_calls={}))
 
@@ -350,6 +352,7 @@ class TestRenderEnvironment:
                     content_names=frozenset(),
                     slot_names=frozenset(),
                     slots={},
+                    data_names=frozenset(),
                     function_names=frozenset({'href'}),
                     function_calls={'href': (InterpolatedFunctionCall(
                         call_args_exp=None,
@@ -385,6 +388,7 @@ class TestRenderEnvironment:
                     content_names=frozenset(),
                     slot_names=frozenset(),
                     slots={},
+                    data_names=frozenset(),
                     function_names=frozenset({'href'}),
                     function_calls={'href': (InterpolatedFunctionCall(
                         call_args_exp=None,
@@ -403,6 +407,7 @@ class TestRenderEnvironment:
         class FakeTemplate:
             foo: Var[str]
             bar: Slot[FakeGlobalTemplate]
+            baz: str
 
         loader = DictTemplateLoader(templates={'fake': 'foobar'})
         loader_mock = Mock(spec=loader.load_async, wraps=loader.load_async)
@@ -427,6 +432,7 @@ class TestRenderEnvironment:
                 content_names=frozenset(),
                 slot_names=frozenset({'bar'}),
                 slots={},
+                data_names=frozenset({'baz'}),
                 function_names=frozenset(),
                 function_calls={}),
             strict_mode=True)
@@ -461,6 +467,7 @@ class TestRenderEnvironment:
                     content_names=frozenset({'foo'}),
                     slot_names=frozenset(),
                     slots={},
+                    data_names=frozenset(),
                     function_names=frozenset(),
                     function_calls={}),
                 strict_mode=True)
@@ -488,6 +495,7 @@ class TestRenderEnvironment:
                     content_names=frozenset(),
                     slot_names=frozenset(),
                     slots={},
+                    data_names=frozenset(),
                     function_names=frozenset(),
                     function_calls={}),
                 strict_mode=True)
@@ -514,6 +522,7 @@ class TestRenderEnvironment:
                 content_names=frozenset(),
                 slot_names=frozenset(),
                 slots={},
+                data_names=frozenset(),
                 function_names=frozenset(),
                 function_calls={}),
             strict_mode=False)

@@ -32,6 +32,7 @@ PARSED_EMPTY_TEMPLATE = ParsedTemplateResource(
     content_names=frozenset(),
     slot_names=frozenset(),
     slots={},
+    data_names=frozenset(),
     function_names=frozenset(),
     function_calls={})
 EMPTY_TEMPLATE_XABLE = cast(type[TemplateIntersectable], EmptyTemplate)

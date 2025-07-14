@@ -5,12 +5,14 @@ from unittest.mock import patch
 
 import pytest
 
+from templatey._bootstrapping import EMPTY_TEMPLATE_INSTANCE
 from templatey.interpolators import NamedInterpolator
 from templatey.parser import InterpolatedFunctionCall
 from templatey.parser import InterpolatedVariable
 from templatey.parser import InterpolationConfig
 from templatey.parser import LiteralTemplateString
 from templatey.parser import NestedContentReference
+from templatey.parser import NestedDataReference
 from templatey.parser import NestedVariableReference
 from templatey.parser import ParsedTemplateResource
 from templatey.renderer import FuncExecutionResult
@@ -75,6 +77,7 @@ class TestRenderDriver:
                     slot_names=frozenset(),
                     slots={},
                     function_names=frozenset(),
+                    data_names=frozenset(),
                     function_calls={}))
             return
             yield
@@ -128,6 +131,7 @@ class TestRenderDriver:
                     slot_names=frozenset(),
                     slots={},
                     function_names=frozenset({'fakefunc'}),
+                    data_names=frozenset(),
                     function_calls={'fakefunc': (fake_interpolated_call,)}))
             render_context.function_precall[fake_cache_key] = (
                 FuncExecutionResult(
@@ -184,6 +188,7 @@ class TestRenderDriver:
                     content_names=frozenset(),
                     slot_names=frozenset(),
                     slots={},
+                    data_names=frozenset(),
                     function_names=frozenset(),
                     function_calls={}))
             return
@@ -236,6 +241,7 @@ class TestRenderContext:
                 content_names=frozenset(),
                 slot_names=frozenset(),
                 slots={},
+                data_names=frozenset(),
                 function_names=frozenset(),
                 function_calls={})
 
@@ -283,6 +289,7 @@ class TestRenderContext:
                     content_names=frozenset(),
                     slot_names=frozenset(),
                     slots={},
+                    data_names=frozenset(),
                     function_names=frozenset({'fakefunc'}),
                     function_calls={'fakefunc': (fake_interpolated_call,)})
 
@@ -337,6 +344,7 @@ class TestRenderContext:
                     content_names=frozenset(),
                     slot_names=frozenset(),
                     slots={},
+                    data_names=frozenset(),
                     function_names=frozenset({'fakefunc'}),
                     function_calls={'fakefunc': (fake_interpolated_call,)})
 
@@ -367,6 +375,7 @@ class TestRecursivelyCoerceFuncExecutionParams:
         """
         retval = _recursively_coerce_func_execution_params(
             42,
+            template_instance=EMPTY_TEMPLATE_INSTANCE,
             unescaped_vars=cast(_ParamLookup, {}),
             unverified_content=cast(_ParamLookup, {}))
         assert retval == 42
@@ -378,6 +387,7 @@ class TestRecursivelyCoerceFuncExecutionParams:
         """
         retval = _recursively_coerce_func_execution_params(
             'foo',
+            template_instance=EMPTY_TEMPLATE_INSTANCE,
             unescaped_vars=cast(_ParamLookup, {}),
             unverified_content=cast(_ParamLookup, {}))
         assert retval == 'foo'
@@ -388,6 +398,7 @@ class TestRecursivelyCoerceFuncExecutionParams:
         """
         retval = _recursively_coerce_func_execution_params(
             ['foo', 'bar'],
+            template_instance=EMPTY_TEMPLATE_INSTANCE,
             unescaped_vars=cast(_ParamLookup, {}),
             unverified_content=cast(_ParamLookup, {}))
         assert retval == ('foo', 'bar')
@@ -397,6 +408,7 @@ class TestRecursivelyCoerceFuncExecutionParams:
         """
         retval = _recursively_coerce_func_execution_params(
             {'foo': 'oof', 'bar': 'rab'},
+            template_instance=EMPTY_TEMPLATE_INSTANCE,
             unescaped_vars=cast(_ParamLookup, {}),
             unverified_content=cast(_ParamLookup, {}))
         assert retval == {'foo': 'oof', 'bar': 'rab'}
@@ -404,6 +416,10 @@ class TestRecursivelyCoerceFuncExecutionParams:
     @pytest.mark.parametrize(
         'before,expected_after',
         [
+            (NestedDataReference('data1'), '1data'),
+            ([NestedDataReference('data1')], ('1data',)),
+            ({'foo': NestedDataReference('data1')}, {'foo': '1data'}),
+            (['beep', NestedDataReference('data1')], ('beep', '1data')),
             (NestedContentReference('foo'), 'oof'),
             ([NestedContentReference('foo')], ('oof',)),
             ({'foo': NestedContentReference('foo')}, {'foo': 'oof'}),
@@ -419,10 +435,15 @@ class TestRecursivelyCoerceFuncExecutionParams:
         including those nested inside collections, must correctly be
         coerced (dereferenced).
         """
+        @template(fake_template_config, object())
+        class FakeTemplate:
+            data1: str
+
         fake_unverified_content = cast(_ParamLookup, {'foo': 'oof'})
         fake_unescaped_vars = cast(_ParamLookup, {'bar': 'rab'})
         retval = _recursively_coerce_func_execution_params(
             before,
+            template_instance=FakeTemplate(data1='1data'),
             unverified_content=fake_unverified_content,
             unescaped_vars=fake_unescaped_vars)
         assert retval == expected_after

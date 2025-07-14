@@ -38,6 +38,7 @@ from templatey.parser import InterpolatedSlot
 from templatey.parser import InterpolatedVariable
 from templatey.parser import InterpolationConfig
 from templatey.parser import NestedContentReference
+from templatey.parser import NestedDataReference
 from templatey.parser import NestedVariableReference
 from templatey.parser import ParsedTemplateResource
 from templatey.templates import ComplexContent
@@ -478,10 +479,12 @@ class _PrepopulationBatch:
                     # instance.
                     args = _recursively_coerce_func_execution_params(
                         abstract_call.call_args,
+                        template_instance=provenance.slotpath[-1].instance,
                         unescaped_vars=unescaped_vars,
                         unverified_content=unverified_content)
                     kwargs = _recursively_coerce_func_execution_params(
                         abstract_call.call_kwargs,
+                        template_instance=provenance.slotpath[-1].instance,
                         unescaped_vars=unescaped_vars,
                         unverified_content=unverified_content)
 
@@ -490,6 +493,8 @@ class _PrepopulationBatch:
                             Iterable,
                             _recursively_coerce_func_execution_params(
                                 abstract_call.call_args_exp,
+                                template_instance=
+                                    provenance.slotpath[-1].instance,
                                 unescaped_vars=unescaped_vars,
                                 unverified_content=unverified_content)))
 
@@ -498,6 +503,8 @@ class _PrepopulationBatch:
                             Mapping,
                             _recursively_coerce_func_execution_params(
                                 abstract_call.call_kwargs_exp,
+                                template_instance=
+                                    provenance.slotpath[-1].instance,
                                 unescaped_vars=unescaped_vars,
                                 unverified_content=unverified_content)))
 
@@ -837,6 +844,7 @@ class _ParamLookup(Mapping[str, object]):
 def _recursively_coerce_func_execution_params(
         param_value: str,
         *,
+        template_instance: TemplateParamsInstance,
         unescaped_vars: _ParamLookup,
         unverified_content: _ParamLookup
         ) -> str: ...
@@ -844,6 +852,7 @@ def _recursively_coerce_func_execution_params(
 def _recursively_coerce_func_execution_params[K: object, V: object](
         param_value: Mapping[K, V],
         *,
+        template_instance: TemplateParamsInstance,
         unescaped_vars: _ParamLookup,
         unverified_content: _ParamLookup
         ) -> dict[K, V]: ...
@@ -851,6 +860,7 @@ def _recursively_coerce_func_execution_params[K: object, V: object](
 def _recursively_coerce_func_execution_params[T: object](
         param_value: list[T] | tuple[T],
         *,
+        template_instance: TemplateParamsInstance,
         unescaped_vars: _ParamLookup,
         unverified_content: _ParamLookup
         ) -> tuple[T]: ...
@@ -858,6 +868,7 @@ def _recursively_coerce_func_execution_params[T: object](
 def _recursively_coerce_func_execution_params(
         param_value: NestedContentReference | NestedVariableReference,
         *,
+        template_instance: TemplateParamsInstance,
         unescaped_vars: _ParamLookup,
         unverified_content: _ParamLookup
         ) -> object: ...
@@ -865,6 +876,7 @@ def _recursively_coerce_func_execution_params(
 def _recursively_coerce_func_execution_params[T: object](
         param_value: T,
         *,
+        template_instance: TemplateParamsInstance,
         unescaped_vars: _ParamLookup,
         unverified_content: _ParamLookup
         ) -> T: ...
@@ -873,6 +885,7 @@ def _recursively_coerce_func_execution_params(
         # Note: singledispatch doesn't support type vars
         param_value: object,
         *,
+        template_instance: TemplateParamsInstance,
         unescaped_vars: _ParamLookup,
         unverified_content: _ParamLookup
         ) -> object:
@@ -900,6 +913,7 @@ def _(
         # Note: singledispatch doesn't support type vars
         param_value: list | tuple | dict,
         *,
+        template_instance: TemplateParamsInstance,
         unescaped_vars: _ParamLookup,
         unverified_content: _ParamLookup
         ) -> tuple | dict:
@@ -912,6 +926,7 @@ def _(
         return {
             contained_key: _recursively_coerce_func_execution_params(
                 contained_value,
+                template_instance=template_instance,
                 unescaped_vars=unescaped_vars,
                 unverified_content=unverified_content)
             for contained_key, contained_value in param_value.items()}
@@ -920,6 +935,7 @@ def _(
         return tuple(
             _recursively_coerce_func_execution_params(
                 contained_value,
+                template_instance=template_instance,
                 unescaped_vars=unescaped_vars,
                 unverified_content=unverified_content)
             for contained_value in param_value)
@@ -931,6 +947,7 @@ def _(
         # Note: singledispatch doesn't support type vars
         param_value: str,
         *,
+        template_instance: TemplateParamsInstance,
         unescaped_vars: _ParamLookup,
         unverified_content: _ParamLookup
         ) -> str:
@@ -946,6 +963,7 @@ def _(
 def _(
         param_value: NestedContentReference,
         *,
+        template_instance: TemplateParamsInstance,
         unescaped_vars: _ParamLookup,
         unverified_content: _ParamLookup
         ) -> object:
@@ -962,6 +980,7 @@ def _(
 def _(
         param_value: NestedVariableReference,
         *,
+        template_instance: TemplateParamsInstance,
         unescaped_vars: _ParamLookup,
         unverified_content: _ParamLookup
         ) -> object:
@@ -971,6 +990,23 @@ def _(
     coercion in the first place.
     """
     return unescaped_vars[param_value.name]
+
+
+# Note: I think there might be a bug in pyright re: singledispatch vs overloads
+@_recursively_coerce_func_execution_params.register  # type: ignore
+def _(
+        param_value: NestedDataReference,
+        *,
+        template_instance: TemplateParamsInstance,
+        unescaped_vars: _ParamLookup,
+        unverified_content: _ParamLookup
+        ) -> object:
+    """Nested variable references need to be retrieved from the
+    unescaped vars. Note that this (along with the nested content
+    references) are the whole reason we're doing this execution params
+    coercion in the first place.
+    """
+    return getattr(template_instance, param_value.name)
 
 
 def _apply_format(raw_value, config: InterpolationConfig) -> str:

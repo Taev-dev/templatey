@@ -29,6 +29,7 @@ class InterfaceAnnotationFlavor(Enum):
     VARIABLE = 'var'
     CONTENT = 'content'
     DYNAMIC = 'dynamic'
+    DATA = 'data'
 
 
 @dataclass(frozen=True)

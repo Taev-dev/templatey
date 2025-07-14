@@ -874,3 +874,26 @@ class TestApiE2E:
                 foo2=[NestedTemplate(value=...)]))
 
         assert render_result == 'foo1 foo2'
+
+    def test_func_with_data_ref(self):
+        """A template with two identical union slot types under
+        different slot names must successfully render.
+        """
+        template_txt = '''yolo {@echo_chamber(data.bar)}'''
+
+        @template(html, 'template_txt')
+        class FakeTemplate:
+            bar: str
+
+        def echo_chamber(val: str) -> list[str]:
+            return [val]
+
+        render_env = RenderEnvironment(
+            env_functions=(echo_chamber,),
+            template_loader=DictTemplateLoader(
+                templates={
+                    'template_txt': template_txt,}))
+
+        render_result = render_env.render_sync(FakeTemplate(bar='oloy'))
+
+        assert render_result == 'yolo oloy'
