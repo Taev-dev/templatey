@@ -288,9 +288,10 @@ class RenderEnvironment:
                         unmodified_part,
                         part_index=next(part_index_counter)))
 
-            parsed_template_resource = dc_replace(
-                parsed_template_resource,
-                parts=tuple(parts_after_modification))
+            # Note: cannot just do dc_replace; we have a bunch more bookkeeping
+            # than that!
+            parsed_template_resource = ParsedTemplateResource.from_parts(
+                parts_after_modification)
 
             if override_validation_strictness is None:
                 strict_mode = self.strict_interpolation_validation
@@ -547,7 +548,8 @@ def _coerce_modified_segment(
     parsed template resource part, including a part index.
     """
     if isinstance(modified_segment, str):
-        return LiteralTemplateString(str, part_index=next(part_index_counter))
+        return LiteralTemplateString(
+            modified_segment, part_index=next(part_index_counter))
 
     elif isinstance(modified_segment, EnvFuncInvocationRef):
         return InterpolatedFunctionCall(

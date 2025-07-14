@@ -68,6 +68,76 @@ class ParsedTemplateResource:
     def __post_init__(self):
         object.__setattr__(self, 'part_count', len(self.parts))
 
+    @classmethod
+    def from_parts(
+            cls,
+            parts: Sequence[
+                LiteralTemplateString
+                | InterpolatedSlot
+                | InterpolatedContent
+                | InterpolatedVariable
+                | InterpolatedFunctionCall,]
+            ) -> ParsedTemplateResource:
+        if not isinstance(parts, tuple):
+            parts = tuple(parts)
+
+        content_names = set()
+        slot_names = set()
+        variable_names = set()
+        data_names = set()
+        functions = defaultdict(list)
+        for part in parts:
+            if isinstance(part, InterpolatedContent):
+                content_names.add(part.name)
+            elif isinstance(part, InterpolatedVariable):
+                variable_names.add(part.name)
+            elif isinstance(part, InterpolatedSlot):
+                # Interpolated slots must be unique; enforce that here.
+                if part.name in slot_names:
+                    raise DuplicateSlotName(part.name)
+
+                for maybe_reference in part.params.values():
+                    nested_content_refs, nested_var_refs, _ = \
+                        _extract_nested_refs(maybe_reference)
+                    content_names.update(
+                        ref.name for ref in nested_content_refs)
+                    variable_names.update(ref.name for ref in nested_var_refs)
+
+                slot_names.add(part.name)
+
+            elif isinstance(part, InterpolatedFunctionCall):
+                for maybe_reference in itertools.chain(
+                    part.call_args,
+                    part.call_kwargs.values(),
+                    (starargs for starargs in (part.call_args_exp,)),
+                    (starkwargs for starkwargs in (part.call_kwargs_exp,))
+                ):
+                    (
+                        nested_content_refs,
+                        nested_var_refs,
+                        nested_data_refs) = _extract_nested_refs(
+                            maybe_reference)
+                    content_names.update(
+                        ref.name for ref in nested_content_refs)
+                    variable_names.update(ref.name for ref in nested_var_refs)
+                    data_names.update(ref.name for ref in nested_data_refs)
+
+                functions[part.name].append(part)
+
+        return cls(
+            parts=parts,
+            content_names=frozenset(content_names),
+            variable_names=frozenset(variable_names),
+            slot_names=frozenset(slot_names),
+            function_names=frozenset(functions),
+            function_calls={
+                name: tuple(calls) for name, calls in functions.items()},
+            data_names=frozenset(data_names),
+            slots={
+                maybe_slot.name: maybe_slot
+                for maybe_slot in parts
+                if isinstance(maybe_slot, InterpolatedSlot)})
+
 
 class LiteralTemplateString(str):
     __slots__ = ['part_index']
@@ -199,61 +269,7 @@ def parse(
 
     parts = tuple(
         _wrap_formatter_parse(template_str, do_untransform=do_untransform))
-
-    content_names = set()
-    slot_names = set()
-    variable_names = set()
-    data_names = set()
-    functions = defaultdict(list)
-    for part in parts:
-        if isinstance(part, InterpolatedContent):
-            content_names.add(part.name)
-        elif isinstance(part, InterpolatedVariable):
-            variable_names.add(part.name)
-        elif isinstance(part, InterpolatedSlot):
-            # Interpolated slots must be unique; enforce that here.
-            if part.name in slot_names:
-                raise DuplicateSlotName(part.name)
-
-            for maybe_reference in part.params.values():
-                nested_content_refs, nested_var_refs, _ = _extract_nested_refs(
-                    maybe_reference)
-                content_names.update(ref.name for ref in nested_content_refs)
-                variable_names.update(ref.name for ref in nested_var_refs)
-
-            slot_names.add(part.name)
-
-        elif isinstance(part, InterpolatedFunctionCall):
-            for maybe_reference in itertools.chain(
-                part.call_args,
-                part.call_kwargs.values(),
-                (starargs for starargs in (part.call_args_exp,)),
-                (starkwargs for starkwargs in (part.call_kwargs_exp,))
-            ):
-                (
-                    nested_content_refs,
-                    nested_var_refs,
-                    nested_data_refs) = _extract_nested_refs(
-                        maybe_reference)
-                content_names.update(ref.name for ref in nested_content_refs)
-                variable_names.update(ref.name for ref in nested_var_refs)
-                data_names.update(ref.name for ref in nested_data_refs)
-
-            functions[part.name].append(part)
-
-    return ParsedTemplateResource(
-        parts=parts,
-        content_names=frozenset(content_names),
-        variable_names=frozenset(variable_names),
-        slot_names=frozenset(slot_names),
-        function_names=frozenset(functions),
-        function_calls={
-            name: tuple(calls) for name, calls in functions.items()},
-        data_names=frozenset(data_names),
-        slots={
-            maybe_slot.name: maybe_slot
-            for maybe_slot in parts
-            if isinstance(maybe_slot, InterpolatedSlot)})
+    return ParsedTemplateResource.from_parts(parts)
 
 
 def _extract_nested_refs(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from dataclasses import FrozenInstanceError
 from dataclasses import is_dataclass
@@ -17,6 +18,7 @@ from templatey._types import TemplateIntersectable
 from templatey._types import Var
 from templatey._types import is_template_class
 from templatey._types import is_template_instance
+from templatey.templates import SegmentModifier
 from templatey.templates import make_template_definition
 from templatey.templates import template
 
@@ -116,6 +118,29 @@ class TestMakeTemplateDefinition:
             template_config=fake_template_config,
             segment_modifiers=[])
         assert is_template_class(retval)
+
+    def test_segment_modifiers_assigned(self):
+        """Segment modifiers, if defined, must be added to the template
+        class.
+        """
+        class Foo:
+            foo: Var[str]
+
+        modifiers = [
+            SegmentModifier(
+                pattern=re.compile(''),
+                modifier=lambda modifier_match: [])]
+
+        retval = make_template_definition(
+            Foo,
+            dataclass_kwargs={},
+            template_resource_locator=object(),
+            template_config=fake_template_config,
+            segment_modifiers=modifiers)
+        assert hasattr(retval, '_templatey_segment_modifiers')
+        assert cast(
+            type[TemplateIntersectable], retval
+        )._templatey_segment_modifiers == tuple(modifiers)
 
     def test_closure_resolution_works(self):
         """Another template referenced as a slot must successfully

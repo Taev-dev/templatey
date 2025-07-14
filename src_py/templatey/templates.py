@@ -721,7 +721,7 @@ class ComplexContent(_ComplexContentBase):
             ''')]
 
 
-@dataclass(slots=True, kw_only=True)
+@dataclass(slots=True, frozen=True)
 class SegmentModifier:
     """Segment modifiers are a particularly powerful tool for reducing
     the verbosity of the actual template text. They allow you to modify
@@ -813,15 +813,16 @@ class SegmentModifierMatch:
         # has the added benefit of meaning we don't need to change behavior
         # between both cases.
         split_type_count = src_pattern.groups + 1
-        last_index = len(splits) - 1
 
         current_captures = []
         for index, post_split_segment in enumerate(splits):
             # This is always literal text, even if it's an empty string.
             if not index % split_type_count:
                 # Note that the zeroth and last index are always literal text,
-                # and are never preceeded or followed by a capture.
-                if 0 < index < last_index:
+                # and are never preceeded or followed by a capture. However,
+                # we still need to yield the preceeding match when we reach
+                # the end.
+                if 0 < index:
                     yield cls(captures=current_captures)
                     current_captures = []
 
