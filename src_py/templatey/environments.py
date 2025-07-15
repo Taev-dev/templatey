@@ -4,6 +4,8 @@ from collections.abc import Callable
 from collections.abc import Iterable
 from collections.abc import Sequence
 from dataclasses import dataclass
+from dataclasses import replace as dc_replace
+from itertools import count
 from typing import Literal
 from typing import Optional
 from typing import Protocol
@@ -24,12 +26,21 @@ from templatey.exceptions import MismatchedRenderColor
 from templatey.exceptions import MismatchedTemplateEnvironment
 from templatey.exceptions import MismatchedTemplateSignature
 from templatey.exceptions import TemplateyException
+from templatey.parser import InterpolatedContent
+from templatey.parser import InterpolatedFunctionCall
+from templatey.parser import InterpolatedSlot
+from templatey.parser import InterpolatedVariable
+from templatey.parser import InterpolationConfig
+from templatey.parser import LiteralTemplateString
 from templatey.parser import ParsedTemplateResource
+from templatey.parser import TemplateInstanceContentRef
+from templatey.parser import TemplateInstanceVariableRef
 from templatey.parser import parse
 from templatey.renderer import FuncExecutionRequest
 from templatey.renderer import FuncExecutionResult
 from templatey.renderer import RenderEnvRequest
 from templatey.renderer import render_driver
+from templatey.templates import EnvFuncInvocationRef
 from templatey.templates import InjectedValue
 
 # Note: strings here will be escaped. InjectedValues may decide whether or not
@@ -237,6 +248,50 @@ class RenderEnvironment:
             template_config = template_class._templatey_config
             parsed_template_resource = parse(
                 template_text, template_config.interpolator)
+            segment_modifiers = template_class._templatey_segment_modifiers
+            part_index_counter = count()
+
+            parts_after_modification: list[
+                LiteralTemplateString
+                | InterpolatedSlot
+                | InterpolatedContent
+                | InterpolatedVariable
+                | InterpolatedFunctionCall] = []
+
+            for unmodified_part in parsed_template_resource.parts:
+                # The combinatorics here are gross, but this only runs once per
+                # template load, and not once per render, so at least there's
+                # that.
+                if isinstance(unmodified_part, str):
+                    for modifier in segment_modifiers:
+                        had_matches, after_mods = modifier.apply_and_flatten(
+                            unmodified_part)
+
+                        if had_matches:
+                            parts_after_modification.extend(
+                                _coerce_modified_segment(
+                                    modified_segment, part_index_counter)
+                                for modified_segment in after_mods)
+                            break
+
+                    else:
+                        # We still want to create a copy here, in case the
+                        # template loader is doing its own caching beyond what
+                        # we do within the env
+                        parts_after_modification.append(
+                            LiteralTemplateString(
+                                unmodified_part,
+                                part_index=next(part_index_counter)))
+
+                else:
+                    parts_after_modification.append(dc_replace(
+                        unmodified_part,
+                        part_index=next(part_index_counter)))
+
+            # Note: cannot just do dc_replace; we have a bunch more bookkeeping
+            # than that!
+            parsed_template_resource = ParsedTemplateResource.from_parts(
+                parts_after_modification)
 
             if override_validation_strictness is None:
                 strict_mode = self.strict_interpolation_validation
@@ -475,3 +530,47 @@ def _infer_asyncness(env_function: EnvFunction | EnvFunctionAsync) -> bool:
     return (
         inspect.iscoroutinefunction(env_function)
         or inspect.isawaitable(env_function))
+
+
+def _coerce_modified_segment(
+        modified_segment:
+            str
+            | EnvFuncInvocationRef
+            | TemplateInstanceContentRef
+            | TemplateInstanceVariableRef,
+        part_index_counter: count,
+            ) -> (
+                LiteralTemplateString
+                | InterpolatedContent
+                | InterpolatedVariable
+                | InterpolatedFunctionCall):
+    """Converts the result of segment modification into an actual
+    parsed template resource part, including a part index.
+    """
+    if isinstance(modified_segment, str):
+        return LiteralTemplateString(
+            modified_segment, part_index=next(part_index_counter))
+
+    elif isinstance(modified_segment, EnvFuncInvocationRef):
+        return InterpolatedFunctionCall(
+            part_index=next(part_index_counter),
+            name=modified_segment.name,
+            call_args=modified_segment.call_args,
+            call_args_exp=None,
+            call_kwargs=modified_segment.call_kwargs,
+            call_kwargs_exp=None)
+
+    elif isinstance(modified_segment, TemplateInstanceContentRef):
+        return InterpolatedContent(
+            part_index=next(part_index_counter),
+            name=modified_segment.name,
+            config=InterpolationConfig())
+
+    elif isinstance(modified_segment, TemplateInstanceVariableRef):
+        return InterpolatedVariable(
+            part_index=next(part_index_counter),
+            name=modified_segment.name,
+            config=InterpolationConfig())
+
+    else:
+        raise TypeError('Unknown modified segment type!', modified_segment)

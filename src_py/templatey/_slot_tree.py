@@ -1343,8 +1343,6 @@ def extract_dynamic_class_slot_types(  # noqa: C901, PLR0912, PLR0915
                 slot_name = frame._ordered_slot_names[
                     frame.target_slot_name_index]
                 target_instance_index = frame.target_instance_index
-                print(target_instance_index)
-                print(active_instance_id)
 
                 # As with subtree checking, this is effectively a nested stack,
                 # but we're maintaining state within the current frame to

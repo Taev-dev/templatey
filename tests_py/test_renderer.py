@@ -11,10 +11,10 @@ from templatey.parser import InterpolatedFunctionCall
 from templatey.parser import InterpolatedVariable
 from templatey.parser import InterpolationConfig
 from templatey.parser import LiteralTemplateString
-from templatey.parser import NestedContentReference
-from templatey.parser import NestedDataReference
-from templatey.parser import NestedVariableReference
 from templatey.parser import ParsedTemplateResource
+from templatey.parser import TemplateInstanceContentRef
+from templatey.parser import TemplateInstanceDataRef
+from templatey.parser import TemplateInstanceVariableRef
 from templatey.renderer import FuncExecutionResult
 from templatey.renderer import _apply_format
 from templatey.renderer import _capture_traceback
@@ -416,22 +416,26 @@ class TestRecursivelyCoerceFuncExecutionParams:
     @pytest.mark.parametrize(
         'before,expected_after',
         [
-            (NestedDataReference('data1'), '1data'),
-            ([NestedDataReference('data1')], ('1data',)),
-            ({'foo': NestedDataReference('data1')}, {'foo': '1data'}),
-            (['beep', NestedDataReference('data1')], ('beep', '1data')),
-            (NestedContentReference('foo'), 'oof'),
-            ([NestedContentReference('foo')], ('oof',)),
-            ({'foo': NestedContentReference('foo')}, {'foo': 'oof'}),
-            (['beep', NestedContentReference('foo')], ('beep', 'oof')),
-            (NestedVariableReference('bar'), 'rab'),
-            ([NestedVariableReference('bar')], ('rab',)),
-            ({'bar': NestedVariableReference('bar')}, {'bar': 'rab'}),
-            (['beep', NestedVariableReference('bar')], ('beep', 'rab')),
-            ([NestedContentReference('foo'), NestedVariableReference('bar')],
+            (TemplateInstanceDataRef('data1'), '1data'),
+            ([TemplateInstanceDataRef('data1')], ('1data',)),
+            ({'foo': TemplateInstanceDataRef('data1')}, {'foo': '1data'}),
+            (['beep', TemplateInstanceDataRef('data1')], ('beep', '1data')),
+            (TemplateInstanceContentRef('foo'), 'oof'),
+            ([TemplateInstanceContentRef('foo')], ('oof',)),
+            ({'foo': TemplateInstanceContentRef('foo')}, {'foo': 'oof'}),
+            (['beep', TemplateInstanceContentRef('foo')], ('beep', 'oof')),
+            (TemplateInstanceVariableRef('bar'), 'rab'),
+            ([TemplateInstanceVariableRef('bar')], ('rab',)),
+            ({'bar': TemplateInstanceVariableRef('bar')}, {'bar': 'rab'}),
+            (['beep', TemplateInstanceVariableRef('bar')], ('beep', 'rab')),
+            (
+                [
+                    TemplateInstanceContentRef('foo'),
+                    TemplateInstanceVariableRef('bar')],
                 ('oof', 'rab'))])
     def test_recursive_nested_reference(self, before, expected_after):
-        """``NestedContentReference``s and ``NestedVariableReference``s,
+        """``TemplateInstanceContentRef``s and
+        ``TemplateInstanceVariableRef``s,
         including those nested inside collections, must correctly be
         coerced (dereferenced).
         """

@@ -9,9 +9,9 @@ from templatey._slot_tree import SlotTreeNode
 from templatey._types import TemplateClass
 from templatey._types import TemplateInstanceID
 from templatey._types import TemplateParamsInstance
-from templatey.parser import NestedContentReference
-from templatey.parser import NestedVariableReference
 from templatey.parser import ParsedTemplateResource
+from templatey.parser import TemplateInstanceContentRef
+from templatey.parser import TemplateInstanceVariableRef
 
 
 @dataclass(slots=True, frozen=True)
@@ -92,7 +92,7 @@ class Provenance:
             if encloser_param_name in encloser_overrides:
                 value = encloser_overrides[encloser_param_name]
 
-                if isinstance(value, NestedContentReference):
+                if isinstance(value, TemplateInstanceContentRef):
                     encloser_slot_key = encloser.encloser_slot_key
                     encloser_param_name = value.name
                     value = ...
@@ -140,7 +140,7 @@ class Provenance:
             if encloser_param_name in encloser_overrides:
                 value = encloser_overrides[encloser_param_name]
 
-                if isinstance(value, NestedVariableReference):
+                if isinstance(value, TemplateInstanceVariableRef):
                     encloser_slot_key = encloser.encloser_slot_key
                     encloser_param_name = value.name
                     value = ...

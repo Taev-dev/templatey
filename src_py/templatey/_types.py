@@ -18,6 +18,7 @@ from typing_extensions import TypeIs
 if typing.TYPE_CHECKING:
     from _typeshed import DataclassInstance
 
+    from templatey.templates import SegmentModifier
     from templatey.templates import TemplateConfig
     from templatey.templates import TemplateSignature
 else:
@@ -196,6 +197,7 @@ class TemplateIntersectable(Protocol):
     # Field names match the field names from the params; the value is gathered
     # from the metadata value on the field.
     _templatey_prerenderers: ClassVar[NamedTuple]
+    _templatey_segment_modifiers: ClassVar[tuple[SegmentModifier]]
 
 
 # Note: we don't need cryptographically secure IDs here, so let's preserve

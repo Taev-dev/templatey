@@ -1,0 +1,22 @@
+{
+    "jinja":
+    {
+        "simple.load": 0.000545698500063736,
+        "simple.render": 0.000536211500002537,
+        "nested_comp.load": 0.001264360199565999,
+        "nested_comp.render": 0.0006101701999432407,
+        "nested_comp_funky.render.sync": 0.0006230943998089061,
+        "nested_comp_funky.render.asyncio": 0.00008333179977489635,
+        "nested_comp_funky.render.trio": 0.00010885979956947267
+    },
+    "templatey":
+    {
+        "simple.load": 3.745999420061708E-7,
+        "simple.render": 0.000023284300114028155,
+        "nested_comp.load": 3.9190013194456695E-7,
+        "nested_comp.render": 0.00010311799996998161,
+        "nested_comp_funky.render.sync": 0.00015479940053774043,
+        "nested_comp_funky.render.asyncio": 0.00025125180062605067,
+        "nested_comp_funky.render.trio": 0.00037272549892077223
+    }
+}

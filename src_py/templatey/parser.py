@@ -10,12 +10,16 @@ from collections.abc import Collection
 from collections.abc import Generator
 from collections.abc import Iterator
 from collections.abc import Mapping
+from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import fields
 from functools import singledispatch
+from typing import Annotated
 from typing import Any
 from typing import cast
+
+from docnote import ClcNote
 
 from templatey.exceptions import DuplicateSlotName
 from templatey.exceptions import InvalidTemplateInterpolation
@@ -63,6 +67,76 @@ class ParsedTemplateResource:
 
     def __post_init__(self):
         object.__setattr__(self, 'part_count', len(self.parts))
+
+    @classmethod
+    def from_parts(
+            cls,
+            parts: Sequence[
+                LiteralTemplateString
+                | InterpolatedSlot
+                | InterpolatedContent
+                | InterpolatedVariable
+                | InterpolatedFunctionCall,]
+            ) -> ParsedTemplateResource:
+        if not isinstance(parts, tuple):
+            parts = tuple(parts)
+
+        content_names = set()
+        slot_names = set()
+        variable_names = set()
+        data_names = set()
+        functions = defaultdict(list)
+        for part in parts:
+            if isinstance(part, InterpolatedContent):
+                content_names.add(part.name)
+            elif isinstance(part, InterpolatedVariable):
+                variable_names.add(part.name)
+            elif isinstance(part, InterpolatedSlot):
+                # Interpolated slots must be unique; enforce that here.
+                if part.name in slot_names:
+                    raise DuplicateSlotName(part.name)
+
+                for maybe_reference in part.params.values():
+                    nested_content_refs, nested_var_refs, _ = \
+                        _extract_nested_refs(maybe_reference)
+                    content_names.update(
+                        ref.name for ref in nested_content_refs)
+                    variable_names.update(ref.name for ref in nested_var_refs)
+
+                slot_names.add(part.name)
+
+            elif isinstance(part, InterpolatedFunctionCall):
+                for maybe_reference in itertools.chain(
+                    part.call_args,
+                    part.call_kwargs.values(),
+                    (starargs for starargs in (part.call_args_exp,)),
+                    (starkwargs for starkwargs in (part.call_kwargs_exp,))
+                ):
+                    (
+                        nested_content_refs,
+                        nested_var_refs,
+                        nested_data_refs) = _extract_nested_refs(
+                            maybe_reference)
+                    content_names.update(
+                        ref.name for ref in nested_content_refs)
+                    variable_names.update(ref.name for ref in nested_var_refs)
+                    data_names.update(ref.name for ref in nested_data_refs)
+
+                functions[part.name].append(part)
+
+        return cls(
+            parts=parts,
+            content_names=frozenset(content_names),
+            variable_names=frozenset(variable_names),
+            slot_names=frozenset(slot_names),
+            function_names=frozenset(functions),
+            function_calls={
+                name: tuple(calls) for name, calls in functions.items()},
+            data_names=frozenset(data_names),
+            slots={
+                maybe_slot.name: maybe_slot
+                for maybe_slot in parts
+                if isinstance(maybe_slot, InterpolatedSlot)})
 
 
 class LiteralTemplateString(str):
@@ -116,7 +190,7 @@ class InterpolatedVariable:
 class InterpolatedFunctionCall:
     part_index: int
     name: str
-    call_args: list[object] = field(compare=False)
+    call_args: Sequence[object] = field(compare=False)
     call_args_exp: object | None = field(compare=False)
     call_kwargs: dict[str, object] = field(compare=False)
     call_kwargs_exp: object | None = field(compare=False)
@@ -145,24 +219,42 @@ class InterpolatedFunctionCall:
 
 
 @dataclass(slots=True, frozen=True)
-class NestedContentReference:
-    name: str
+class TemplateInstanceContentRef:
+    """Used to indicate that an environment function or segment
+    modification needs to reference a content parameter on the current
+    template instance being rendered.
+    """
+    name: Annotated[
+        str,
+        ClcNote('The name of the content parameter')]
 
 
 @dataclass(slots=True, frozen=True)
-class NestedVariableReference:
-    name: str
+class TemplateInstanceVariableRef:
+    """Used to indicate that an environment function or segment
+    modification needs to reference a variable parameter on the current
+    template instance being rendered.
+    """
+    name: Annotated[
+        str,
+        ClcNote('The name of the variable parameter')]
 
 
 @dataclass(slots=True, frozen=True)
-class NestedDataReference:
-    name: str
+class TemplateInstanceDataRef:
+    """Used to indicate that an environment function (including one
+    injected via segment modification) needs to reference a template
+    data attribute on the current template instance being rendered.
+    """
+    name: Annotated[
+        str,
+        ClcNote('The name of the data attribute (the dataclass field name)')]
 
 
 _VALID_NESTED_REFS = {
-    'content': NestedContentReference,
-    'var': NestedVariableReference,
-    'data': NestedDataReference,}
+    'content': TemplateInstanceContentRef,
+    'var': TemplateInstanceVariableRef,
+    'data': TemplateInstanceDataRef,}
 
 
 def parse(
@@ -177,69 +269,15 @@ def parse(
 
     parts = tuple(
         _wrap_formatter_parse(template_str, do_untransform=do_untransform))
-
-    content_names = set()
-    slot_names = set()
-    variable_names = set()
-    data_names = set()
-    functions = defaultdict(list)
-    for part in parts:
-        if isinstance(part, InterpolatedContent):
-            content_names.add(part.name)
-        elif isinstance(part, InterpolatedVariable):
-            variable_names.add(part.name)
-        elif isinstance(part, InterpolatedSlot):
-            # Interpolated slots must be unique; enforce that here.
-            if part.name in slot_names:
-                raise DuplicateSlotName(part.name)
-
-            for maybe_reference in part.params.values():
-                nested_content_refs, nested_var_refs, _ = _extract_nested_refs(
-                    maybe_reference)
-                content_names.update(ref.name for ref in nested_content_refs)
-                variable_names.update(ref.name for ref in nested_var_refs)
-
-            slot_names.add(part.name)
-
-        elif isinstance(part, InterpolatedFunctionCall):
-            for maybe_reference in itertools.chain(
-                part.call_args,
-                part.call_kwargs.values(),
-                (starargs for starargs in (part.call_args_exp,)),
-                (starkwargs for starkwargs in (part.call_kwargs_exp,))
-            ):
-                (
-                    nested_content_refs,
-                    nested_var_refs,
-                    nested_data_refs) = _extract_nested_refs(
-                        maybe_reference)
-                content_names.update(ref.name for ref in nested_content_refs)
-                variable_names.update(ref.name for ref in nested_var_refs)
-                data_names.update(ref.name for ref in nested_data_refs)
-
-            functions[part.name].append(part)
-
-    return ParsedTemplateResource(
-        parts=parts,
-        content_names=frozenset(content_names),
-        variable_names=frozenset(variable_names),
-        slot_names=frozenset(slot_names),
-        function_names=frozenset(functions),
-        function_calls={
-            name: tuple(calls) for name, calls in functions.items()},
-        data_names=frozenset(data_names),
-        slots={
-            maybe_slot.name: maybe_slot
-            for maybe_slot in parts
-            if isinstance(maybe_slot, InterpolatedSlot)})
+    return ParsedTemplateResource.from_parts(parts)
 
 
 def _extract_nested_refs(
         value
         ) -> tuple[
-            set[NestedContentReference],
-            set[NestedVariableReference],
-            set[NestedDataReference]]:
+            set[TemplateInstanceContentRef],
+            set[TemplateInstanceVariableRef],
+            set[TemplateInstanceDataRef]]:
     """Call this to recursively extract all of the content and variable
     references contained within an environment function call.
     """
@@ -258,13 +296,13 @@ def _extract_nested_refs(
     else:
         nested_values = ()
 
-        if isinstance(value, NestedContentReference):
+        if isinstance(value, TemplateInstanceContentRef):
             content_refs.add(value)
 
-        elif isinstance(value, NestedVariableReference):
+        elif isinstance(value, TemplateInstanceVariableRef):
             var_refs.add(value)
 
-        elif isinstance(value, NestedDataReference):
+        elif isinstance(value, TemplateInstanceDataRef):
             data_refs.add(value)
 
     for nested_val in nested_values:

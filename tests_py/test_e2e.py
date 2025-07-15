@@ -4,6 +4,7 @@ them over when this moves to a dedicated repo.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import pytest
@@ -16,11 +17,15 @@ from templatey import param
 from templatey import template
 from templatey.environments import RenderEnvironment
 from templatey.interpolators import NamedInterpolator
+from templatey.parser import TemplateInstanceDataRef
 from templatey.prebaked.env_funcs import inject_templates
 from templatey.prebaked.loaders import DictTemplateLoader
 from templatey.prebaked.template_configs import html
 from templatey.prebaked.template_configs import html_escaper
 from templatey.prebaked.template_configs import html_verifier
+from templatey.templates import EnvFuncInvocationRef
+from templatey.templates import SegmentModifier
+from templatey.templates import SegmentModifierMatch
 from templatey.templates import TemplateConfig
 
 
@@ -879,7 +884,7 @@ class TestApiE2E:
         """A template with two identical union slot types under
         different slot names must successfully render.
         """
-        template_txt = '''yolo {@echo_chamber(data.bar)}'''
+        template_txt = 'yolo {@echo_chamber(data.bar)}'
 
         @template(html, 'template_txt')
         class FakeTemplate:
@@ -897,3 +902,41 @@ class TestApiE2E:
         render_result = render_env.render_sync(FakeTemplate(bar='oloy'))
 
         assert render_result == 'yolo oloy'
+
+    def test_segment_modifier(self):
+        """A template with a segment modifier that injects a reference
+        to a render function using template data must successfully
+        render.
+        """
+        template_txt = '\nwhitespace injection\nfor fun and profit!'
+
+        def inject_whitespace(level: int) -> list[str]:
+            return ['    ' * level]
+
+        def modifier(
+                match: SegmentModifierMatch
+                ) -> list[EnvFuncInvocationRef | str]:
+            return [
+                *match.captures,
+                EnvFuncInvocationRef(
+                    'inject_whitespace',
+                    TemplateInstanceDataRef('indent_depth'))]
+
+        @template(html, 'template_txt', segment_modifiers=[
+            SegmentModifier(
+                pattern=re.compile(r'(\n)'),
+                modifier=modifier)])
+        class FakeTemplate:
+            indent_depth: int
+
+        render_env = RenderEnvironment(
+            env_functions=(inject_whitespace,),
+            template_loader=DictTemplateLoader(
+                templates={
+                    'template_txt': template_txt,}),
+            strict_interpolation_validation=False)
+
+        render_result = render_env.render_sync(FakeTemplate(indent_depth=2))
+
+        assert render_result == (
+            '\n        whitespace injection\n        for fun and profit!')

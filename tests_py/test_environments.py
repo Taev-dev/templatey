@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import cast
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -26,6 +27,7 @@ from templatey.parser import parse
 from templatey.prebaked.loaders import DictTemplateLoader
 from templatey.renderer import FuncExecutionRequest
 from templatey.renderer import FuncExecutionResult
+from templatey.templates import SegmentModifier
 from templatey.templates import template
 
 from templatey_testutils import fake_template_config
@@ -233,6 +235,17 @@ class TestRenderEnvironment:
         functions and cache whatever result is given by the loader. It
         must also, of course, call into parsing.
         """
+        # Doesn't need to be right, just needs to be a dataclass instance
+        mock_parse.return_value = ParsedTemplateResource(
+            parts=(),
+            variable_names=frozenset(),
+            content_names=frozenset(),
+            slot_names=frozenset(),
+            function_names=frozenset(),
+            data_names=frozenset(),
+            function_calls={},
+            slots={})
+
         @template(fake_template_config, 'fake')
         class FakeTemplate:
             foo: Var[str]
@@ -251,11 +264,74 @@ class TestRenderEnvironment:
             template_text='foobar',
             override_validation_strictness=None)
 
-        assert result is mock_parse.return_value
+        # Note that it won't be the actual object, because we created a copy
+        # while applying modifiers
+        assert result == mock_parse.return_value
         assert mock_parse.call_count == 1
         assert FakeTemplate in render_env._parsed_template_cache
         assert render_env._validate_env_functions.call_count == 1
         assert render_env._validate_template_signature.call_count == 1
+
+    @patch('templatey.environments.parse', spec=parse)
+    def test_parse_and_cache_applies_modifiers(self, mock_parse):
+        """parse_and_cache must apply any modifiers on the template
+        to every string segment. They must be applied in order based on
+        the segment_modifiers sequence, and must short circuit on the
+        first match.
+        """
+        # Doesn't need to be right, just needs to be a dataclass instance
+        mock_parse.return_value = ParsedTemplateResource(
+            parts=(
+                LiteralTemplateString('foo ', part_index=0),
+                LiteralTemplateString('bar ', part_index=1),
+                LiteralTemplateString('baz', part_index=2)),
+            variable_names=frozenset(),
+            content_names=frozenset(),
+            slot_names=frozenset(),
+            function_names=frozenset(),
+            data_names=frozenset(),
+            function_calls={},
+            slots={})
+
+        seg_mods = [
+            SegmentModifier(
+                pattern=re.compile('f(o)(o)'),
+                modifier=
+                    lambda modifier_match: [
+                        f'mo{capture}'
+                        for capture in modifier_match.captures]),
+            SegmentModifier(
+                pattern=re.compile('foo|bar'),
+                modifier=lambda modifier_match: ['oof', 'rab'])]
+
+        @template(fake_template_config, 'fake', segment_modifiers=seg_mods)
+        class FakeTemplate:
+            foo: Var[str]
+
+        loader = DictTemplateLoader(templates={'fake': 'foobar'})
+        loader_mock = Mock(spec=loader.load_async, wraps=loader.load_async)
+        loader.load_async = loader_mock
+
+        render_env = RenderEnvironment(template_loader=loader)
+        render_env._validate_env_functions = Mock(
+            spec=render_env._validate_env_functions)
+        render_env._validate_template_signature = Mock(
+            spec=render_env._validate_template_signature)
+        result = render_env._parse_and_cache(
+            cast(type[TemplateIntersectable], FakeTemplate),
+            template_text='foobar',
+            override_validation_strictness=None)
+
+        assert result != mock_parse.return_value
+        assert result.part_count != mock_parse.return_value.part_count
+        assert result.parts == (
+            LiteralTemplateString('moo', part_index=0),
+            LiteralTemplateString('moo', part_index=1),
+            LiteralTemplateString(' ', part_index=2),
+            LiteralTemplateString('oof', part_index=3),
+            LiteralTemplateString('rab', part_index=4),
+            LiteralTemplateString(' ', part_index=5),
+            LiteralTemplateString('baz', part_index=6),)
 
     def test_validate_env_functions_matching_trivial(self):
         """_validate_env_functions must succeed if the template
